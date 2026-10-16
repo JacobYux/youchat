@@ -201,6 +201,52 @@ class Wake(unittest.TestCase):
             self.lead.call("team_update", {"name": "W", "status": "active"})
         self.assertEqual(self.wait_reply()[0]["body"], "ack: while paused")  # resumes after unpause
 
+    def test_8_codex_and_agy_command_builders(self):
+        from youchat.cli import interactive_command
+        from youchat.runner import build_command
+        cmd_u, _ = build_command({
+            "cli": "codex", "agent": "DEV-CDX-1", "session_id": "sid-123", "prompt": "do dev",
+            "model": "gpt-6.1-sol", "effort": "ultra", "options": {"ultra": True, "permission_mode": "bypass"},
+        })
+        self.assertIn("-m", cmd_u)
+        self.assertEqual(cmd_u[cmd_u.index("-m") + 1], "gpt-6.1-sol")
+        self.assertIn('model_reasoning_effort="ultra"', cmd_u)
+        self.assertIn("--dangerously-bypass-approvals-and-sandbox", cmd_u)
+        self.assertEqual(cmd_u[-3:], ["resume", "sid-123", "do dev"])
+
+        cmd_m, _ = build_command({
+            "cli": "codex", "agent": "RUN-CDX-1", "session_id": "", "prompt": "submit job",
+            "model": "gpt-6.1-sol", "effort": "medium", "options": {"permission_mode": "bypass"},
+        })
+        self.assertEqual(cmd_m[cmd_m.index("-m") + 1], "gpt-6.1-sol")
+        self.assertIn('model_reasoning_effort="medium"', cmd_m)
+        self.assertEqual(cmd_m[-1], "submit job")
+        self.assertNotIn("resume", cmd_m)
+
+        icmd = interactive_command({
+            "cli": "codex", "agent": "DEV-CDX-1", "session_id": "sid-123", "cwd": "/tmp",
+            "model": "gpt-6.1-sol", "effort": "ultra", "options": {"ultra": True, "permission_mode": "bypass"},
+        })
+        self.assertIn("-m gpt-6.1-sol", icmd)
+        self.assertIn('model_reasoning_effort="ultra"', icmd)
+        self.assertIn("--dangerously-bypass-approvals-and-sandbox", icmd)
+
+        cmd_agy, notes = build_command({
+            "cli": "antigravity", "agent": "DEV-AGY-1", "session_id": "cid-456", "prompt": "review",
+            "heavy": True, "options": {"boost": True, "permission_mode": "bypass"},
+        })
+        self.assertEqual(cmd_agy[cmd_agy.index("-p") + 1], "/boost review")
+        self.assertIn("boost", notes)
+
+        from youchat.sessions import SESSION_ARG_RE
+        u1 = "3b26d6b9-a98c-46cc-9205-c84613227886"
+        u2 = "01a143bc-10b3-7592-ad84-cb82e0a7eba1"
+        self.assertEqual(SESSION_ARG_RE.findall("agy --conversation %s" % u1), [u1])
+        self.assertEqual(SESSION_ARG_RE.findall("agy --conversation=%s" % u1), [u1])
+        self.assertEqual(SESSION_ARG_RE.findall("codex resume %s -m gpt-6.1-sol" % u2), [u2])
+        self.assertEqual(SESSION_ARG_RE.findall("sqlite3 ~/.codex/db 'SELECT * WHERE id=%s'" % u1), [])
+
 
 if __name__ == "__main__":
     unittest.main()
+

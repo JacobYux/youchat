@@ -67,7 +67,7 @@ def build_command(job: Dict[str, Any]) -> Tuple[List[str], List[str]]:
         cmd = [which("codex"), "exec", "--skip-git-repo-check", "--json"]
         if model:
             cmd += ["-m", model]
-        eff = "xhigh" if o.get("ultra") or effort == "ultra" else effort
+        eff = "ultra" if o.get("ultra") else effort
         if eff:
             cmd += ["-c", 'model_reasoning_effort="%s"' % eff]
         if perm in BYPASS:
@@ -358,6 +358,34 @@ class Runner:
                 pass
             if not sid and not new_sid:
                 new_sid = extract_session_id(chunk)
+                if new_sid and job["cli"] == "codex":
+                    try:
+                        idx = os.path.expanduser("~/.codex/session_index.jsonl")
+                        if os.path.isdir(os.path.dirname(idx)):
+                            with open(idx, "a", encoding="utf-8") as f:
+                                f.write(json.dumps({"id": new_sid, "thread_name": agent,
+                                                    "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}) + "\n")
+                    except OSError:
+                        pass
+            if job["cli"] == "antigravity" and (sid or new_sid):
+                cid = sid or new_sid or ""
+                try:
+                    ann_dir = os.path.expanduser("~/.gemini/antigravity-cli/annotations")
+                    ann_path = os.path.join(ann_dir, cid + ".pbtxt")
+                    if new_sid:
+                        os.makedirs(ann_dir, exist_ok=True)
+                        with open(ann_path, "w", encoding="utf-8") as f:
+                            f.write('title:"%s"' % agent)
+                    import sqlite3
+                    db = os.path.expanduser("~/.gemini/antigravity-cli/conversation_summaries.db")
+                    if os.path.isfile(db) and (new_sid or (os.path.isfile(ann_path) and
+                                                           ('title:"%s"' % agent) in open(ann_path, encoding="utf-8", errors="replace").read())):
+                        con = sqlite3.connect(db, timeout=2)
+                        con.execute("UPDATE conversation_summaries SET title=? WHERE conversation_id=?", (agent, cid))
+                        con.commit()
+                        con.close()
+                except Exception:
+                    pass
             if code is not None:
                 err = turn_error(job["cli"], code, chunk, sid or new_sid)
             if not err:
