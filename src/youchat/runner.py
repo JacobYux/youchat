@@ -133,6 +133,98 @@ def extract_session_id(text: str) -> Optional[str]:
     return None
 
 
+CONT_PROMPT = (
+    "[youchat] 你（%(agent)s）上一轮后台处理中途中断（%(err)s）。\n"
+    "请先调用 check_inbox 查看是否还有未读消息，并检查上一轮进行到了哪一步（是否有半写的文件、已提交的作业或尚未发出的汇报），"
+    "从断点继续完成任务并调用 send_message 回复；若上一轮其实已经完成了回复，直接结束本轮即可。"
+)
+
+
+def retry_delays() -> List[float]:
+    raw = os.environ.get("YOUCHAT_RETRY_DELAYS", "15,45")
+    return [float(x) for x in raw.split(",") if x.strip()]
+
+
+def _parse_json_objects(text: str) -> List[Dict[str, Any]]:
+    objs: List[Dict[str, Any]] = []
+    try:
+        o = json.loads(text)
+        if isinstance(o, dict):
+            objs.append(o)
+    except ValueError:
+        pass
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                o = json.loads(line)
+                if isinstance(o, dict):
+                    objs.append(o)
+            except ValueError:
+                pass
+    return objs
+
+
+def _agy_transcript_incomplete(cid: str) -> Optional[str]:
+    """Check ~/.gemini/antigravity-cli/brain/<cid>/.system_generated/logs/transcript.jsonl.
+    Note: `agy -p --output-format json` sets status=ERROR forever if *any* past turn in the
+    conversation ever had an ERROR_MESSAGE step. The transcript's final step tells us whether
+    *this* turn actually finished (PLANNER_RESPONSE + DONE + no pending tool_calls) or aborted."""
+    if not cid:
+        return None
+    path = os.path.expanduser("~/.gemini/antigravity-cli/brain/%s/.system_generated/logs/transcript.jsonl" % cid)
+    if not os.path.isfile(path):
+        return None
+    try:
+        last = None
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if line.strip():
+                    last = line
+        if not last:
+            return None
+        d = json.loads(last)
+    except (OSError, ValueError):
+        return None
+    st, tp, tools = d.get("status"), d.get("type"), d.get("tool_calls") or []
+    if tp == "ERROR_MESSAGE" or st not in ("DONE", None) or tools:
+        return "transcript ended at %s (%s)" % (tp, st)
+    return "OK"
+
+
+def turn_error(cli: str, code: Optional[int], text: str, sid: Optional[str] = None) -> Optional[str]:
+    """Return a short reason if a headless CLI turn aborted mid-work (even when exit code is 0)."""
+    if code is None:
+        return "timed out"
+    if code != 0:
+        return "exit %d" % code
+    objs = _parse_json_objects(text)
+    if cli == "claude":
+        for d in reversed(objs):
+            if d.get("is_error") or d.get("subtype") == "error_during_execution" or d.get("terminal_reason") in (
+                "aborted_streaming", "api_error"
+            ):
+                return str(d.get("terminal_reason") or d.get("subtype") or "is_error")[:120]
+    elif cli == "antigravity":
+        last = objs[-1] if objs else {}
+        cid = sid or str(last.get("conversation_id") or "")
+        tr = _agy_transcript_incomplete(cid)
+        if tr == "OK":
+            return None
+        if tr:
+            return str(last.get("error") or tr)[:120]
+        if last.get("status") == "ERROR" and not str(last.get("response") or "").strip():
+            return str(last.get("error") or "status=ERROR")[:120]
+    elif cli == "codex":
+        completed = any(d.get("type") == "turn.completed" for d in objs)
+        for d in reversed(objs):
+            if d.get("type") in ("turn.failed", "error") and not completed:
+                err = d.get("error")
+                msg = err.get("message") if isinstance(err, dict) else (err or d.get("message") or d.get("type"))
+                return str(msg)[:120]
+    return None
+
+
 def notify_desktop(title: str, body: str) -> None:
     if sys.platform != "darwin":
         return
@@ -204,8 +296,6 @@ class Runner:
         except ValueError as e:
             self._done(job, None, None, str(e))
             return
-        if self.pre:  # e.g. 'claude_on' to enable a proxy defined in ~/.bashrc
-            cmd = ["bash", "-ic", '%s >/dev/null 2>&1; exec "$@"' % self.pre, "youchat-wake"] + cmd
         env = dict(os.environ, YOUCHAT_NAME=agent, YOUCHAT_KIND=job["cli"], PATH=search_path())
         cwd = job.get("cwd") or os.path.expanduser("~")
         if not os.path.isdir(cwd):
@@ -214,29 +304,74 @@ class Runner:
         log("wake %s: %s (%s%s) in %s%s" % (job["wake_id"], agent, job["cli"], " " + sid[:8] if sid else " NEW",
                                              cwd, ("  [" + "; ".join(notes) + "]") if notes else ""))
         started = time.time()
+        delays = retry_delays()
+        new_sid: Optional[str] = None
         code: Optional[int] = None
-        note = "; ".join(notes)
-        try:
-            with open(logpath, "wb") as out:
-                os.chmod(logpath, 0o600)
-                out.write(("$ %s\n\n" % " ".join(cmd[:3] + ["..."])).encode())
-                out.flush()
-                code = subprocess.run(cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=out,
-                                      stderr=subprocess.STDOUT,
-                                      timeout=max(60, float(job.get("lease_seconds", 10800)) - 60)).returncode
-        except subprocess.TimeoutExpired:
-            note = (note + "; " if note else "") + "timed out"
-        except OSError as e:
-            note = (note + "; " if note else "") + "failed to start: %s" % e
-        new_sid = None
-        if not sid:
+        err: Optional[str] = None
+        retries = 0
+        first_err: Optional[str] = None
+
+        for attempt in range(len(delays) + 1):
+            if attempt > 0:
+                delay = delays[attempt - 1]
+                log("wake %s: %s interrupted (%s); retry %d/%d in %.0fs"
+                    % (job["wake_id"], agent, err, attempt, len(delays), delay))
+                time.sleep(delay)
+                cur_sid = sid or new_sid or ""
+                if cur_sid and cur_sid in running_session_ids():
+                    log("wake %s: %s session %s opened during retry; yielding" % (job["wake_id"], agent, cur_sid))
+                    self._done(job, None, new_sid, "busy")
+                    return
+                rjob = dict(job, session_id=cur_sid, prompt=CONT_PROMPT % {"agent": agent, "err": err})
+                cmd, _ = build_command(rjob)
+                retries = attempt
+
+            run_cmd = (["bash", "-ic", '%s >/dev/null 2>&1; exec "$@"' % self.pre, "youchat-wake"] + cmd
+                       if self.pre else cmd)
+            code = None
+            chunk_start = 0
             try:
-                with open(logpath, encoding="utf-8", errors="replace") as f:
-                    new_sid = extract_session_id(f.read())
+                mode = "wb" if attempt == 0 else "ab"
+                with open(logpath, mode) as out:
+                    if attempt == 0:
+                        os.chmod(logpath, 0o600)
+                    else:
+                        out.write(("\n--- retry %d (%s) ---\n" % (attempt, err)).encode())
+                    out.write(("$ %s\n\n" % " ".join(cmd[:3] + ["..."])).encode())
+                    out.flush()
+                    chunk_start = out.tell()
+                    code = subprocess.run(
+                        run_cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
+                        timeout=max(60, float(job.get("lease_seconds", 10800)) - 60)).returncode
+            except subprocess.TimeoutExpired:
+                err = "timed out"
+            except OSError as e:
+                err = "failed to start: %s" % e
+                break
+
+            chunk = ""
+            try:
+                with open(logpath, "rb") as f:
+                    f.seek(chunk_start)
+                    chunk = f.read().decode("utf-8", errors="replace")
             except OSError:
                 pass
-        log("wake %s: %s finished exit=%s in %.0fs (log %s)" % (job["wake_id"], agent, code, time.time() - started,
-                                                              logpath))
+            if not sid and not new_sid:
+                new_sid = extract_session_id(chunk)
+            if code is not None:
+                err = turn_error(job["cli"], code, chunk, sid or new_sid)
+            if not err:
+                break
+            if first_err is None:
+                first_err = err
+
+        if err:
+            notes.append("incomplete: %s" % err)
+        elif retries:
+            notes.append("retried %dx (%s)" % (retries, first_err))
+        note = "; ".join(notes)
+        log("wake %s: %s finished exit=%s in %.0fs (log %s)%s"
+            % (job["wake_id"], agent, code, time.time() - started, logpath, ("  [" + note + "]") if note else ""))
         self._done(job, code, new_sid, note)
 
 

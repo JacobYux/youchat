@@ -654,6 +654,12 @@ class Hub:
                         % (agent, NOPROGRESS_LIMIT, exit_code, note or "no note", agent))
             else:
                 self.noprogress[agent] = 0
+        if "incomplete:" in (note or ""):
+            self._system_notice(
+                "%s's background turn (wake %s) did not finish even after automatic retries: %s. Its messages may "
+                "already be marked read, so it will not be woken again for them. Check ~/.youchat/wakes/%s-%s.log, "
+                "then nudge it (e.g. `youchat send %s \"please continue\"`) or open it with `youchat open %s`."
+                % (agent, wake_id, note.split("incomplete:", 1)[1].strip(), agent, wake_id, agent, agent))
         log("wake %s done: %s exit=%s %s" % (wake_id, agent, exit_code, note))
         self._poke_runners()
         return {"ok": True}

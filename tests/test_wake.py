@@ -28,7 +28,24 @@ args = sys.argv[1:]
 with open(os.path.join(%(tmp)r, "calls.log"), "a") as f:
     f.write(json.dumps({"name": name, "args": args, "cwd": os.getcwd()}) + "\n")
 sid = args[args.index("-r") + 1] if "-r" in args else "new-sess-" + name
-if not name.endswith("-LAZY"):
+prompt = args[args.index("-p") + 1] if "-p" in args else ""
+stash = os.path.join(%(tmp)r, name + ".stash")
+if name.endswith(("-FLAKY", "-DEAD")):
+    c = HubClient()
+    c.register(kind="claude", name=name)
+    if "中途中断" not in prompt:            # first attempt: consume the mail, then the "network" drops
+        msgs = c.call("inbox")["messages"]
+        json.dump(msgs, open(stash, "w"))
+        print(json.dumps({"type": "result", "session_id": sid, "is_error": True,
+                          "subtype": "error_during_execution", "terminal_reason": "aborted_streaming"}))
+        sys.exit(0)
+    if name.endswith("-DEAD"):              # retries keep failing
+        print(json.dumps({"type": "result", "session_id": sid, "is_error": True, "subtype": "error_during_execution"}))
+        sys.exit(0)
+    for m in json.load(open(stash)):        # retry: finish the interrupted work
+        c.call("send", {"to": m["sender"], "body": "ack-after-retry: " + m["body"], "thread_id": m["thread_id"],
+                        "kind": "result"})
+elif not name.endswith("-LAZY"):
     c = HubClient()
     c.register(kind="claude", name=name)
     for m in c.call("inbox")["messages"]:
@@ -51,7 +68,7 @@ class Wake(unittest.TestCase):
             f.write(FAKE_CLAUDE % {"py": sys.executable, "src": SRC, "tmp": cls.tmp})
         os.chmod(fake, 0o755)
         cls.env = dict(os.environ, YOUCHAT_HOME=cls.home, YOUCHAT_SOCK=cls.sock, PYTHONPATH=SRC,
-                       YOUCHAT_HOST="wakehost", YOUCHAT_WAKE_COOLDOWN="0.5",
+                       YOUCHAT_HOST="wakehost", YOUCHAT_WAKE_COOLDOWN="0.5", YOUCHAT_RETRY_DELAYS="0.2,0.2",
                        PATH=cls.bin + os.pathsep + os.environ.get("PATH", ""))
         os.environ.update(YOUCHAT_HOME=cls.home, YOUCHAT_SOCK=cls.sock)
         cls.hub = subprocess.Popen([sys.executable, "-m", "youchat", "hub"], env=cls.env, stderr=subprocess.DEVNULL)
@@ -146,6 +163,32 @@ class Wake(unittest.TestCase):
         self.assertEqual(n, 3)
         time.sleep(2)
         self.assertEqual(len([c for c in self.calls() if c["name"] == "W-LAZY"]), 3)  # suspended
+
+    def test_6_interrupted_turn_is_retried(self):
+        self.add("W-FLAKY", session_id="dddddddd-2222-3333-4444-555555555555")
+        self.lead.call("send", {"to": "W-FLAKY", "body": "long job", "kind": "task"})
+        msgs = self.wait_reply()
+        self.assertEqual(msgs[0]["body"], "ack-after-retry: long job")
+        calls = [c for c in self.calls() if c["name"] == "W-FLAKY"]
+        self.assertEqual(len(calls), 2)
+        self.assertIn("中途中断", calls[1]["args"][calls[1]["args"].index("-p") + 1])
+        time.sleep(0.5)
+        w = [x for x in self.lead.call("wakes") if x["agent"] == "W-FLAKY"][0]
+        self.assertIn("retried 1", w["note"])
+
+    def test_7_unrecoverable_turn_notifies_human(self):
+        human = HubClient(self.sock)
+        human.register(kind="human", name="human")
+        human.call("inbox")  # drain older notices
+        self.add("W-DEAD", session_id="eeeeeeee-2222-3333-4444-555555555555")
+        self.lead.call("send", {"to": "W-DEAD", "body": "doomed"})
+        deadline, notice = time.time() + 20, None
+        while time.time() < deadline and not notice:
+            msgs = human.call("wait", {"timeout": 5}, timeout=15)["messages"]
+            notice = next((m for m in msgs if m["sender"] == "youchat" and "W-DEAD" in m["body"]), None)
+        self.assertIsNotNone(notice)
+        self.assertIn("did not finish", notice["body"])
+        self.assertEqual(len([c for c in self.calls() if c["name"] == "W-DEAD"]), 3)  # 1 + 2 retries
 
     def test_5_paused_team_not_woken(self):
         self.add("W-P", session_id="cccccccc-2222-3333-4444-555555555555")
