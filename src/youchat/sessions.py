@@ -91,8 +91,24 @@ def codex_sessions() -> List[Dict[str, Any]]:
     return out
 
 
+SESSION_ARG_RE = re.compile(
+    r"(?:--conversation|--resume|--session-id|-r|\bresume)[=\s]+(" + UUID_RE.pattern + r")"
+)
+
+
 def agy_sessions() -> List[Dict[str, Any]]:
+    ann_titles: Dict[str, str] = {}
+    for p in glob.glob(os.path.join(HOME, ".gemini", "antigravity-cli", "annotations", "*.pbtxt")):
+        cid = os.path.basename(p)[:-6]
+        try:
+            with open(p, encoding="utf-8", errors="replace") as f:
+                m = re.search(r'title:\s*"([^"]*)"', f.read())
+                if m and m.group(1):
+                    ann_titles[cid] = m.group(1)
+        except OSError:
+            pass
     out = []
+    seen: Set[str] = set()
     for db in (os.path.join(HOME, ".gemini", "antigravity-cli", "conversation_summaries.db"),):
         if not os.path.exists(db):
             continue
@@ -104,14 +120,20 @@ def agy_sessions() -> List[Dict[str, Any]]:
         except sqlite3.Error:
             continue
         for cid, title, ws, ts in rows:
+            seen.add(cid)
             cwd = ""
             try:
                 uris = json.loads(ws or "[]")
                 cwd = uris[0].replace("file://", "", 1) if uris else ""
             except (ValueError, AttributeError):
                 pass
-            out.append({"cli": "antigravity", "session_id": cid, "title": title or "", "cwd": cwd,
-                        "updated": float(ts or 0)})
+            out.append({"cli": "antigravity", "session_id": cid, "title": ann_titles.get(cid) or title or "",
+                        "cwd": cwd, "updated": float(ts or 0)})
+    for cid, title in ann_titles.items():
+        if cid not in seen:
+            p = os.path.join(HOME, ".gemini", "antigravity-cli", "annotations", cid + ".pbtxt")
+            out.append({"cli": "antigravity", "session_id": cid, "title": title, "cwd": "",
+                        "updated": os.path.getmtime(p) if os.path.exists(p) else 0.0})
     return out
 
 
@@ -177,11 +199,11 @@ def _ps() -> List[List[str]]:
 
 def running_session_ids() -> Set[str]:
     """Session ids that currently have a live process on this host (Claude registry + any
-    process whose command line mentions a session UUID, e.g. `agy --conversation <id>`)."""
+    process whose command line resumes a session UUID, e.g. `agy --conversation <id>`)."""
     ids = set(claude_running().values())
     for _pid, _ppid, args in _ps():
         if any(k in args for k in ("claude", "codex", "agy")):
-            ids.update(UUID_RE.findall(args))
+            ids.update(SESSION_ARG_RE.findall(args))
     return ids
 
 

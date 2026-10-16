@@ -203,7 +203,10 @@ def interactive_command(m: dict) -> str:
     elif cli == "antigravity":
         argv = ["agy"] + (["--conversation", sid] if sid else []) + (["--dangerously-skip-permissions"] if bypass else [])
     elif cli == "codex":
+        eff = "ultra" if o.get("ultra") else (m.get("effort") or "")
         argv = ["codex"] + (["resume", sid] if sid else []) + \
+               (["-m", m["model"]] if m.get("model") else []) + \
+               (["-c", 'model_reasoning_effort="%s"' % eff] if eff else []) + \
                (["--dangerously-bypass-approvals-and-sandbox"] if bypass else [])
     else:
         raise SystemExit("cannot open a %r member" % cli)
