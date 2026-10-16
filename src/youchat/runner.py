@@ -67,13 +67,13 @@ def build_command(job: Dict[str, Any]) -> Tuple[List[str], List[str]]:
         cmd = [which("codex"), "exec", "--skip-git-repo-check", "--json"]
         if model:
             cmd += ["-m", model]
-        eff = "ultra" if o.get("ultra") else effort
+        eff = "xhigh" if o.get("ultra") or effort == "ultra" else effort
         if eff:
             cmd += ["-c", 'model_reasoning_effort="%s"' % eff]
         if perm in BYPASS:
             cmd += ["--dangerously-bypass-approvals-and-sandbox"]
         elif perm in ("full-auto", "auto"):
-            cmd += ["--full-auto"]
+            cmd += ["--approve-for-me"]
         cmd += ["resume", sid, prompt] if sid else [prompt]
     elif cli == "antigravity":
         if o.get("boost") and job.get("heavy"):
