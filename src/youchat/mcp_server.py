@@ -231,7 +231,27 @@ class McpServer:
 
     # -- live push into the session (Claude Code channels) -------------------------------------
     def channels_supported(self) -> bool:
-        return self.kind() == "claude" and os.environ.get("YOUCHAT_CHANNEL", "1") != "0"
+        if self.kind() != "claude" or os.environ.get("YOUCHAT_CHANNEL", "1") == "0":
+            return False
+        try:
+            from youchat.sessions import _classify_agent_proc, _ps
+            rows = {int(p): (int(pp), a) for p, pp, a in _ps() if p.isdigit() and pp.isdigit()}
+            pid = os.getppid()
+            found_claude = False
+            for _ in range(8):
+                if pid not in rows or pid <= 1:
+                    break
+                ppid, args = rows[pid]
+                if _classify_agent_proc(args) == "claude":
+                    found_claude = True
+                    if "--dangerously-load-development-channels" in args:
+                        return True
+                pid = ppid
+            if found_claude:
+                return False
+        except Exception:
+            pass
+        return True
 
     def start_push(self) -> None:
         if self._push_started or not self.channels_supported():
@@ -306,7 +326,8 @@ class McpServer:
 
     def ensure_registered(self) -> str:
         if self.hub.name is None:
-            self.hub.register(kind=self.kind(), name=self.auto_name(),
+            auto = self.auto_name()
+            self.hub.register(kind=self.kind(), name=auto, force=bool(auto),
                               description=os.environ.get("YOUCHAT_DESC") or None)
         return self.hub.name or ""
 
@@ -471,7 +492,8 @@ class McpServer:
             try:
                 name = self.auto_name()
                 if name:
-                    self.hub.register(kind=self.kind(), name=name, description=os.environ.get("YOUCHAT_DESC") or None)
+                    self.hub.register(kind=self.kind(), name=name, force=True,
+                                      description=os.environ.get("YOUCHAT_DESC") or None)
             except HubError as e:
                 print("youchat: could not register yet: %s" % e, file=sys.stderr)
             caps: Dict[str, Any] = {"tools": {"listChanged": False}}
