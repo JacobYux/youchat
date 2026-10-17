@@ -296,18 +296,30 @@ def cmd_service(a: argparse.Namespace) -> None:
 
 def cmd_tail(a: argparse.Namespace) -> None:
     c = HubClient()
+    flt = getattr(a, "team", None) or getattr(a, "filter", None) or ""
     since = 0
     first = True
     while True:
         try:
-            rows = c.call("log", {"since": since, "limit": a.n if first else 200})
+            members: set = set()
+            if flt and not flt.startswith("t-"):
+                t = c.call("team_get", {"name": flt})
+                members = {m["agent"] for m in t["members"]} | {"team:" + flt}
+            rows = c.call("log", {"since": since, "limit": (a.n * 5 if flt else a.n) if first else 200})
         except HubError as e:
             print("[youchat] %s; retrying..." % e, file=sys.stderr)
             time.sleep(3)
             continue
+        if rows:
+            since = rows[-1]["seq"]
+        if flt.startswith("t-"):
+            rows = [m for m in rows if m.get("thread_id") == flt]
+        elif members:
+            rows = [m for m in rows if m["sender"] in members or (set(m["recipient"].split(",")) & members)]
+        if first and flt:
+            rows = rows[-a.n:]
         for m in rows:
             print(fmt_msg(m) + "\n", flush=True)
-            since = m["seq"]
         first = False
         time.sleep(1)
 
@@ -461,7 +473,9 @@ def main(argv: Optional[List[str]] = None) -> None:
     s.add_argument("--pre", help="passed to the runner (see `youchat runner --pre`)")
     s.set_defaults(fn=cmd_service)
 
-    s = sub.add_parser("tail", help="follow all messages on the bus")
+    s = sub.add_parser("tail", help="follow messages on the bus (all teams, or filter by team / thread)")
+    s.add_argument("filter", nargs="?", help="optional team name (e.g. X86, SPN) or thread id (t-xxxx)")
+    s.add_argument("--team", help="only show messages involving this team")
     s.add_argument("-n", type=int, default=20)
     s.set_defaults(fn=cmd_tail)
 
