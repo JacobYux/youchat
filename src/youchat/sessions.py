@@ -197,31 +197,62 @@ def _ps() -> List[List[str]]:
     return rows
 
 
+LSOF_SESSION_RE = re.compile(
+    r"(?:/presence/|/conversations/|/sessions/\d{4}/\d{2}/\d{2}/rollout-[^/\n]*-)("
+    + UUID_RE.pattern + r")(?:\.lock|\.db|\.jsonl)"
+)
+
+
+def lsof_session_ids(pids: List[int]) -> List[str]:
+    """Find session UUIDs held open by specific `agy` / `codex` PIDs (e.g. presence/*.lock or rollout-*.jsonl)."""
+    pids = [p for p in pids if p > 1]
+    if not pids:
+        return []
+    try:
+        txt = subprocess.run(["lsof", "-Fn", "-p", ",".join(str(p) for p in pids[:32])],
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=3).stdout.decode("utf-8", "replace")
+    except (OSError, subprocess.SubprocessError):
+        return []
+    out: List[str] = []
+    for u in LSOF_SESSION_RE.findall(txt):
+        if u not in out:
+            out.append(u)
+    return out
+
+
 def running_session_ids() -> Set[str]:
-    """Session ids that currently have a live process on this host (Claude registry + any
-    process whose command line resumes a session UUID, e.g. `agy --conversation <id>`)."""
+    """Session ids that currently have a live process on this host (Claude registry + CLI flags + open session files)."""
     ids = set(claude_running().values())
-    for _pid, _ppid, args in _ps():
+    agent_pids: List[int] = []
+    for pid, _ppid, args in _ps():
         if any(k in args for k in ("claude", "codex", "agy")):
             ids.update(SESSION_ARG_RE.findall(args))
+            if "youchat" not in args and pid.isdigit():
+                agent_pids.append(int(pid))
+    ids.update(lsof_session_ids(agent_pids))
     return ids
 
 
 def identify_self() -> List[str]:
     """Session ids this process belongs to, found by walking up the parent-process chain:
-    a Claude ancestor's registry entry, or a UUID in an ancestor's command line."""
+    a Claude ancestor's registry entry, a UUID in an ancestor's command line, or an ancestor's open session file."""
     rows = {int(p): (int(pp), a) for p, pp, a in _ps() if p.isdigit() and pp.isdigit()}
     claude = claude_running()
     ids: List[str] = []
+    ancestors: List[int] = []
     pid = os.getppid()
     for _ in range(8):
+        ancestors.append(pid)
         if pid in claude:
             ids.append(claude[pid])
         if pid in rows:
-            ids += [u for u in UUID_RE.findall(rows[pid][1]) if u not in ids]
+            ids += [u for u in SESSION_ARG_RE.findall(rows[pid][1]) if u not in ids]
             pid = rows[pid][0]
         else:
             break
         if pid <= 1:
             break
+    for u in lsof_session_ids(ancestors):
+        if u not in ids:
+            ids.append(u)
     return ids

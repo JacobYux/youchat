@@ -201,10 +201,11 @@ def interactive_command(m: dict) -> str:
                ["--dangerously-load-development-channels", "server:youchat"] + (["--resume", sid] if sid else
                                                                                ["-n", m["agent"]])
     elif cli == "antigravity":
-        argv = ["agy"] + (["--conversation", sid] if sid else []) + (["--dangerously-skip-permissions"] if bypass else [])
+        argv = ["youchat", "pty", "agy"] + (["--conversation", sid] if sid else []) + \
+               (["--dangerously-skip-permissions"] if bypass else [])
     elif cli == "codex":
         eff = "ultra" if o.get("ultra") else (m.get("effort") or "")
-        argv = ["codex"] + (["resume", sid] if sid else []) + \
+        argv = ["youchat", "pty", "codex"] + (["resume", sid] if sid else []) + \
                (["-m", m["model"]] if m.get("model") else []) + \
                (["-c", 'model_reasoning_effort="%s"' % eff] if eff else []) + \
                (["--dangerously-bypass-approvals-and-sandbox"] if bypass else [])
@@ -391,6 +392,10 @@ def cmd_status(a: argparse.Namespace) -> None:
 
 
 def main(argv: Optional[List[str]] = None) -> None:
+    raw = sys.argv[1:] if argv is None else list(argv)
+    if raw and raw[0] == "pty":
+        from youchat.pty_wrap import run_pty
+        sys.exit(run_pty(raw[1:]))
     p = argparse.ArgumentParser(prog="youchat", description="Cross-machine messaging bus for AI coding agents.")
     p.add_argument("--version", action="version", version="youchat " + VERSION)
     sub = p.add_subparsers(dest="cmd")
