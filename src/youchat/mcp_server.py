@@ -271,12 +271,20 @@ class McpServer:
         """Ping regularly so presence recovers by itself after a hub restart or tunnel drop
         (the client reconnects and re-claims its name), even while the agent is idle."""
         while True:
-            time.sleep(20)
-            if self.hub.name:
+            if not self.hub.name:
+                name = self.auto_name()
+                if name:
+                    try:
+                        self.hub.register(kind=self.kind(), name=name, force=True,
+                                          description=os.environ.get("YOUCHAT_DESC") or None)
+                    except HubError:
+                        pass
+            else:
                 try:
                     self.hub.call("ping", timeout=10)
                 except HubError:
                     pass
+            time.sleep(20)
 
     # -- identity --------------------------------------------------------------------
     def kind(self) -> str:

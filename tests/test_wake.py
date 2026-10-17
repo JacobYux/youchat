@@ -246,7 +246,42 @@ class Wake(unittest.TestCase):
         self.assertEqual(SESSION_ARG_RE.findall("codex resume %s -m gpt-6.1-sol" % u2), [u2])
         self.assertEqual(SESSION_ARG_RE.findall("sqlite3 ~/.codex/db 'SELECT * WHERE id=%s'" % u1), [])
 
+    def test_9_pty_live_push(self):
+        import pty
+        import select
+        import threading
+        from youchat.pty_wrap import _watcher_loop
+        sid = "ffffffff-2222-3333-4444-555555555555"
+        self.add("W-PTY", session_id=sid, options={"boost": True, "permission_mode": "bypass"})
+        master, slave = pty.openpty()
+        # Dummy live child process representing an open interactive TUI window
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(10)"],
+                                stdin=slave, stdout=slave, stderr=slave, close_fds=True)
+        os.close(slave)
+        state = {"last_key": 0.0, "last_out": time.time() - 5.0, "line_dirty": False, "stop": False}
+        t = threading.Thread(target=_watcher_loop,
+                             args=(master, proc, "antigravity", ["--conversation", sid], state), daemon=True)
+        t.start()
+        try:
+            self.lead.call("send", {"to": "W-PTY", "body": "live task", "kind": "task"})
+            buf = b""
+            deadline = time.time() + 8.0
+            while time.time() < deadline and b"\r" not in buf:
+                r, _, _ = select.select([master], [], [], 0.5)
+                if r:
+                    buf += os.read(master, 4096)
+            txt = buf.decode("utf-8", errors="replace")
+            self.assertIn("/boost [youchat]", txt)
+            self.assertIn("W-PTY", txt)
+            self.assertIn("\r", txt)
+        finally:
+            state["stop"] = True
+            proc.terminate()
+            proc.wait()
+            os.close(master)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
