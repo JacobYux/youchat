@@ -38,6 +38,15 @@ def search_path() -> str:
 
 
 def which(exe: str) -> str:
+    for d in search_path().split(os.pathsep):
+        cand = os.path.join(d, exe)
+        if os.path.isfile(cand) and os.access(cand, os.X_OK):
+            try:
+                if os.path.getsize(cand) < 512 and b"youchat-pty-wrapper" in open(cand, "rb").read(512):
+                    continue
+            except OSError:
+                pass
+            return cand
     return shutil.which(exe, path=search_path()) or exe
 
 
@@ -242,6 +251,7 @@ class Runner:
         self.max_jobs = max(1, max_jobs)
         self.pre = pre
         self.active: Dict[str, threading.Thread] = {}
+        self.last_unwrapped_notice: Dict[str, float] = {}
         self.logdir = ensure_private_dir(os.path.join(home_dir(), "wakes"))
 
     def run(self) -> None:
@@ -285,10 +295,38 @@ class Runner:
                 log("could not report wake %s (%s); retrying" % (job["wake_id"], e))
                 time.sleep(2 ** attempt)
 
+    def _should_yield_open(self, job: Dict[str, Any], sid: str) -> bool:
+        if not sid or sid not in running_session_ids():
+            return False
+        cli, agent = job["cli"], job["agent"]
+        from youchat.pty_wrap import is_session_idle
+        from youchat.sessions import live_push_session_ids
+        if sid in live_push_session_ids():
+            log("wake %s: %s session %s is open with live push; not driving in parallel" % (job["wake_id"], agent, sid))
+            return True
+        if not is_session_idle(cli, sid):
+            log("wake %s: %s session %s is actively running a turn; yielding" % (job["wake_id"], agent, sid))
+            return True
+        if cli in ("antigravity", "codex"):
+            now = time.time()
+            if now - self.last_unwrapped_notice.get(agent, 0.0) >= 300.0:
+                self.last_unwrapped_notice[agent] = now
+                cmd_name = "agy" if cli == "antigravity" else "codex"
+                notify_desktop(
+                    "youchat · %s 有 %d 条新消息" % (agent, job.get("unread") or 1),
+                    "该 %s 窗口在旧终端标签页启动（未启用自动推送）；请在窗口内输入 check_inbox 或重开一次 %s。"
+                    % (cmd_name, cmd_name),
+                )
+            log("wake %s: %s session %s is open in unwrapped %s (locked); notified user"
+                % (job["wake_id"], agent, sid, cli))
+            return True
+        log("wake %s: %s session %s is open in unwrapped %s window and idle; driving headless turn"
+            % (job["wake_id"], agent, sid, cli))
+        return False
+
     def _run_job(self, job: Dict[str, Any]) -> None:
         agent, sid = job["agent"], job.get("session_id") or ""
-        if sid and sid in running_session_ids():
-            log("wake %s: %s session %s is open on this host; not driving it in parallel" % (job["wake_id"], agent, sid))
+        if self._should_yield_open(job, sid):
             self._done(job, None, None, "busy")
             return
         try:
@@ -318,8 +356,7 @@ class Runner:
                     % (job["wake_id"], agent, err, attempt, len(delays), delay))
                 time.sleep(delay)
                 cur_sid = sid or new_sid or ""
-                if cur_sid and cur_sid in running_session_ids():
-                    log("wake %s: %s session %s opened during retry; yielding" % (job["wake_id"], agent, cur_sid))
+                if self._should_yield_open(job, cur_sid):
                     self._done(job, None, new_sid, "busy")
                     return
                 rjob = dict(job, session_id=cur_sid, prompt=CONT_PROMPT % {"agent": agent, "err": err})
@@ -358,15 +395,39 @@ class Runner:
                 pass
             if not sid and not new_sid:
                 new_sid = extract_session_id(chunk)
-                if new_sid and job["cli"] == "codex":
-                    try:
+            if job["cli"] == "codex" and (sid or new_sid):
+                cid = sid or new_sid or ""
+                try:
+                    if new_sid:
                         idx = os.path.expanduser("~/.codex/session_index.jsonl")
                         if os.path.isdir(os.path.dirname(idx)):
                             with open(idx, "a", encoding="utf-8") as f:
                                 f.write(json.dumps({"id": new_sid, "thread_name": agent,
                                                     "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}) + "\n")
-                    except OSError:
-                        pass
+                    import glob
+                    import sqlite3
+                    rpaths: List[str] = []
+                    for db in glob.glob(os.path.expanduser("~/.codex/state_*.sqlite")):
+                        con = sqlite3.connect(db, timeout=2)
+                        row = con.execute("SELECT name, rollout_path FROM threads WHERE id=?", (cid,)).fetchone()
+                        if row:
+                            if row[1]:
+                                rpaths.append(row[1])
+                            if new_sid or not row[0] or row[0] == agent:
+                                con.execute("UPDATE threads SET source='cli', name=?, title=? WHERE id=?", (agent, agent, cid))
+                            else:
+                                con.execute("UPDATE threads SET source='cli' WHERE id=? AND source='exec'", (cid,))
+                            con.commit()
+                        con.close()
+                    for rp in rpaths or glob.glob(os.path.expanduser("~/.codex/sessions/*/*/*/rollout-*%s.jsonl" % cid)):
+                        if os.path.isfile(rp):
+                            with open(rp, "r+b") as f:
+                                pos = f.readline().find(b'"source":"exec"')
+                                if pos >= 0:
+                                    f.seek(pos)
+                                    f.write(b'"source": "cli"')
+                except Exception:
+                    pass
             if job["cli"] == "antigravity" and (sid or new_sid):
                 cid = sid or new_sid or ""
                 try:

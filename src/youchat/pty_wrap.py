@@ -28,7 +28,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from youchat.common import HubClient, HubError
 from youchat.runner import EXTRA_PATH, _agy_transcript_incomplete
-from youchat.sessions import HOME, SESSION_ARG_RE, lsof_session_ids
+from youchat.sessions import HOME, SESSION_ARG_RE, codex_recent_thread_ids, lsof_session_ids
 
 HEAVY_KINDS = {"task", "handoff", "review_request"}
 NON_INTERACTIVE_AGY = {"-p", "--print", "mcp", "--help", "-h", "--version", "-v"}
@@ -36,10 +36,26 @@ NON_INTERACTIVE_CODEX_SUB = {"exec", "e", "mcp", "login", "logout", "completion"
 NON_INTERACTIVE_FLAGS = {"--help", "-h", "--version", "-V"}
 
 
+def _is_youchat_wrapper(path: str) -> bool:
+    try:
+        if os.path.isfile(path) and os.path.getsize(path) < 512:
+            with open(path, "rb") as f:
+                return b"youchat-pty-wrapper" in f.read(512)
+    except OSError:
+        pass
+    return False
+
+
 def _real_which(exe: str) -> str:
+    if os.path.sep in exe and not _is_youchat_wrapper(exe):
+        return exe
+    base = os.path.basename(exe)
     parts = os.environ.get("PATH", "").split(os.pathsep)
-    search = os.pathsep.join(parts + [p for p in EXTRA_PATH if p not in parts])
-    return shutil.which(exe, path=search) or exe
+    for d in parts + [p for p in EXTRA_PATH if p not in parts]:
+        cand = os.path.join(d, base)
+        if os.path.isfile(cand) and os.access(cand, os.X_OK) and not _is_youchat_wrapper(cand):
+            return cand
+    return shutil.which(exe) or exe
 
 
 def _cli_kind(exe: str) -> str:
@@ -58,7 +74,7 @@ def should_wrap(cli_kind: str, args: List[str]) -> bool:
         return False
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         return False
-    if cli_kind == "antigravity":
+    if cli_kind in ("antigravity", "claude"):
         return not any(a in NON_INTERACTIVE_AGY or a.startswith("--output-format") for a in args)
     if cli_kind == "codex":
         if any(a in NON_INTERACTIVE_FLAGS for a in args):
@@ -72,6 +88,13 @@ def _codex_rollout_path(sid: str) -> Optional[str]:
     if not sid:
         return None
     matches = glob.glob(os.path.join(HOME, ".codex", "sessions", "*", "*", "*", "rollout-*%s.jsonl" % sid))
+    return max(matches, key=os.path.getmtime) if matches else None
+
+
+def _claude_session_path(sid: str) -> Optional[str]:
+    if not sid:
+        return None
+    matches = glob.glob(os.path.join(HOME, ".claude", "projects", "*", "%s.jsonl" % sid))
     return max(matches, key=os.path.getmtime) if matches else None
 
 
@@ -114,6 +137,41 @@ def is_session_idle(cli_kind: str, sid: str) -> bool:
                 if ev in ("task_started", "agent_reasoning", "exec_command_begin", "mcp_tool_call_begin"):
                     return False
         return True
+    if cli_kind == "claude":
+        path = _claude_session_path(sid)
+        if not path:
+            return True
+        try:
+            mtime = os.path.getmtime(path)
+            if now - mtime < 10.0:
+                return False
+            with open(path, encoding="utf-8", errors="replace") as f:
+                lines = f.readlines()[-20:]
+        except OSError:
+            return True
+        for line in reversed(lines):
+            try:
+                d = json.loads(line)
+            except ValueError:
+                continue
+            tp = d.get("type")
+            if tp == "system" and d.get("subtype") == "turn_duration":
+                return True
+            if tp == "assistant":
+                sr = (d.get("message") or {}).get("stop_reason")
+                if sr == "end_turn":
+                    return True
+                if sr == "tool_use" and now - mtime < 180.0:
+                    return False
+            if tp in ("api-request", "api-request-blob") and now - mtime < 180.0:
+                return False
+            if tp == "user":
+                c = str((d.get("message") or {}).get("content") or "")
+                if "<local-command-" in c or "<command-name>" in c:
+                    continue
+                if now - mtime < 180.0:
+                    return False
+        return True
     return True
 
 
@@ -143,10 +201,17 @@ def _copy_winsize(src_fd: int, dst_fd: int) -> None:
         pass
 
 
-def _resolve_identity(hub: HubClient, pid: int, args: List[str],
-                      cur_agent: str, cur_sid: str) -> Tuple[str, str, bool]:
-    sids: List[str] = list(SESSION_ARG_RE.findall(" ".join(args)))
+def _resolve_identity(hub: HubClient, pid: int, cli_kind: str, args: List[str],
+                      cur_agent: str, cur_sid: str, started_at: float = 0.0) -> Tuple[str, str, bool]:
+    sids: List[str] = []
     for u in lsof_session_ids([pid]):
+        if u not in sids:
+            sids.append(u)
+    if cli_kind == "codex":
+        for u in codex_recent_thread_ids(since_ts=max(0.0, started_at - 2.0), limit=1):
+            if u not in sids:
+                sids.append(u)
+    for u in SESSION_ARG_RE.findall(" ".join(args)):
         if u not in sids:
             sids.append(u)
     if cur_sid and cur_sid not in sids:
@@ -155,10 +220,11 @@ def _resolve_identity(hub: HubClient, pid: int, args: List[str],
     sid = sids[0] if sids else cur_sid
     boost = False
     try:
-        if not agent and sids:
+        if sids and (not agent or sids[0] != cur_sid):
             who = hub.call("whois_session", {"session_ids": sids}, timeout=5)
-            agent = who.get("agent") or ""
-            sid = who.get("session_id") or sid
+            if who.get("agent"):
+                agent = who["agent"]
+                sid = who.get("session_id") or sid
         if agent:
             for t in hub.call("teams", timeout=5):
                 for m in t.get("members") or []:
@@ -182,9 +248,10 @@ def _watcher_loop(master_fd: int, proc: subprocess.Popen, cli_kind: str,
     boost = False
     last_seq = 0
     last_inject = 0.0
+    started_at = state.get("started_at") or time.time()
 
     while proc.poll() is None and not state["stop"]:
-        agent, sid, boost = _resolve_identity(hub, proc.pid, args, agent, sid)
+        agent, sid, boost = _resolve_identity(hub, proc.pid, cli_kind, args, agent, sid, started_at)
         if not agent:
             time.sleep(2.0)
             continue
@@ -204,7 +271,7 @@ def _watcher_loop(master_fd: int, proc: subprocess.Popen, cli_kind: str,
             user_idle = (now - state["last_key"] >= 3.0) and not state["line_dirty"]
             out_idle = (now - state["last_out"] >= 1.5)
             cooldown_ok = (now - last_inject >= 25.0)
-            _, sid, boost = _resolve_identity(hub, proc.pid, args, agent, sid)
+            _, sid, boost = _resolve_identity(hub, proc.pid, cli_kind, args, agent, sid, started_at)
             if user_idle and out_idle and cooldown_ok and is_session_idle(cli_kind, sid):
                 break
             time.sleep(1.0)
@@ -246,10 +313,14 @@ def _watcher_loop(master_fd: int, proc: subprocess.Popen, cli_kind: str,
 
 def run_pty(argv: List[str]) -> int:
     if not argv:
-        raise SystemExit("usage: youchat pty <agy|codex> [args...]")
+        raise SystemExit("usage: youchat pty <agy|codex|claude> [args...]")
     exe = _real_which(argv[0])
-    args = argv[1:]
+    args = list(argv[1:])
     cli_kind = _cli_kind(exe)
+    if cli_kind == "claude":
+        if should_wrap(cli_kind, args) and "--dangerously-load-development-channels" not in args:
+            args = ["--dangerously-load-development-channels", "server:youchat"] + args
+        os.execvp(exe, [exe] + args)
     if not should_wrap(cli_kind, args):
         os.execvp(exe, [exe] + args)
 
@@ -273,6 +344,7 @@ def run_pty(argv: List[str]) -> int:
 
     old_winch = signal.signal(signal.SIGWINCH, _on_sigwinch)
     state: Dict[str, Any] = {
+        "started_at": time.time(),
         "last_key": 0.0,
         "last_out": time.time(),
         "line_dirty": False,

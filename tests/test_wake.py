@@ -280,8 +280,107 @@ class Wake(unittest.TestCase):
             proc.wait()
             os.close(master)
 
+    def test_10_codex_state_sqlite_and_rollout_sync(self):
+        import sqlite3
+        from youchat import sessions
+        from youchat.runner import Runner
+        fake_home = os.path.join(self.tmp, "codex_home")
+        codex_dir = os.path.join(fake_home, ".codex")
+        sess_dir = os.path.join(codex_dir, "sessions", "2026", "10", "16")
+        os.makedirs(sess_dir, exist_ok=True)
+        sid = "01a143bc-10b3-7592-ad84-cb82e0a7eba1"
+        rpath = os.path.join(sess_dir, "rollout-2026-10-16T01-02-45-%s.jsonl" % sid)
+        line1 = ('{"type":"session_meta","payload":{"id":"%s","cwd":"/tmp/x86_dev",'
+                 '"originator":"codex_exec","source":"exec"}}\n') % sid
+        line2 = '{"type":"turn.completed"}\n'
+        with open(rpath, "w", encoding="utf-8") as f:
+            f.write(line1 + line2)
+        orig_size = os.path.getsize(rpath)
+        db = os.path.join(codex_dir, "state_5.sqlite")
+        con = sqlite3.connect(db)
+        con.execute("CREATE TABLE threads (id TEXT PRIMARY KEY, source TEXT, name TEXT, title TEXT, rollout_path TEXT)")
+        con.execute("INSERT INTO threads VALUES (?, 'exec', NULL, 'raw prompt', ?)", (sid, rpath))
+        con.commit()
+        con.close()
+
+        fake_codex = os.path.join(self.bin, "codex")
+        with open(fake_codex, "w") as f:
+            f.write("#!%s\nimport json\nprint(json.dumps({'type':'thread.started','thread_id':%r}))\n"
+                    "print(json.dumps({'type':'turn.completed'}))\n" % (sys.executable, sid))
+        os.chmod(fake_codex, 0o755)
+
+        old_home = os.environ.get("HOME")
+        old_path = os.environ.get("PATH")
+        old_sess_home = sessions.HOME
+        os.environ["HOME"] = fake_home
+        os.environ["PATH"] = self.env["PATH"]
+        sessions.HOME = fake_home
+        try:
+            r = Runner(host="wakehost")
+            r._done = lambda *a, **kw: None  # type: ignore[method-assign]
+            r._run_job({"wake_id": 99, "agent": "X86-DEV-CDX-1", "cli": "codex", "session_id": "",
+                        "prompt": "init", "cwd": self.tmp, "options": {}})
+            con = sqlite3.connect(db)
+            row = con.execute("SELECT source, name, title FROM threads WHERE id=?", (sid,)).fetchone()
+            con.close()
+            self.assertEqual(row, ("cli", "X86-DEV-CDX-1", "X86-DEV-CDX-1"))
+            self.assertEqual(os.path.getsize(rpath), orig_size)
+            with open(rpath, "rb") as f:
+                first = f.readline()
+            self.assertIn(b'"source": "cli"', first)
+            self.assertNotIn(b'"source":"exec"', first)
+            found = sessions.codex_sessions()
+            self.assertEqual(len(found), 1)
+            self.assertEqual(found[0]["title"], "X86-DEV-CDX-1")
+        finally:
+            if old_home is not None:
+                os.environ["HOME"] = old_home
+            if old_path is not None:
+                os.environ["PATH"] = old_path
+            sessions.HOME = old_sess_home
+            if os.path.exists(fake_codex):
+                os.unlink(fake_codex)
+
+    def test_11_codex_app_server_and_unwrapped_window_handling(self):
+        from youchat.pty_wrap import is_session_idle
+        from youchat.sessions import _classify_agent_proc
+        self.assertEqual(
+            _classify_agent_proc("/Users/u/.codex/packages/app-server-daemon/bin/codex app-server --managed-daemon"),
+            "codex-daemon",
+        )
+        self.assertIsNone(
+            _classify_agent_proc("/Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Codex --type=renderer")
+        )
+        self.assertEqual(_classify_agent_proc("codex resume 01a143bc-10b3-7592-ad84-cb82e0a7eba1 --yolo"), "codex")
+        self.assertEqual(_classify_agent_proc("agy --dangerously-skip-permissions"), "agy")
+        self.assertEqual(_classify_agent_proc("claude --resume 6a5ed01e-b296-4055-8837-3f65b072bc60"), "claude")
+
+        from youchat import sessions
+        fake_home = os.path.join(self.tmp, "home_claude_idle")
+        proj = os.path.join(fake_home, ".claude", "projects", "testproj")
+        os.makedirs(proj, exist_ok=True)
+        sid = "6a5ed01e-b296-4055-8837-3f65b072bc60"
+        cpath = os.path.join(proj, sid + ".jsonl")
+        with open(cpath, "w") as f:
+            f.write(json.dumps({"type": "assistant", "message": {"stop_reason": "end_turn"}}) + "\n")
+            f.write(json.dumps({"type": "system", "subtype": "turn_duration", "durationMs": 1200}) + "\n")
+        old_mtime = time.time() - 30
+        os.utime(cpath, (old_mtime, old_mtime))
+        old_sess_home = sessions.HOME
+        from youchat import pty_wrap
+        pty_wrap.HOME = fake_home
+        try:
+            self.assertTrue(is_session_idle("claude", sid))
+            with open(cpath, "a") as f:
+                f.write(json.dumps({"type": "api-request"}) + "\n")
+            os.utime(cpath, (old_mtime, old_mtime))
+            self.assertFalse(is_session_idle("claude", sid))
+        finally:
+            pty_wrap.HOME = old_sess_home
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 

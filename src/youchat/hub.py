@@ -129,6 +129,7 @@ class Conn:
         self.writer = writer
         self.name: Optional[str] = None
         self.kind: str = ""
+        self.watching: Optional[str] = None
 
 
 class Hub:
@@ -144,6 +145,7 @@ class Hub:
         os.chmod(db_path, 0o600)
         self.online: Dict[str, Set[Conn]] = {}
         self.waiters: Dict[str, Set["asyncio.Future[None]"]] = {}
+        self.last_watch: Dict[str, float] = {}
         # wake scheduling (phase 2b)
         self.runner_waiters: Set["asyncio.Future[None]"] = set()
         self.leases: Dict[str, Dict[str, Any]] = {}   # agent -> {expires, wake_id, unread, host}
@@ -210,6 +212,9 @@ class Hub:
             pass
 
     def _set_offline(self, conn: Conn) -> None:
+        if conn.watching:
+            self.last_watch.pop(conn.watching, None)
+            self._poke_runners()
         if conn.name and conn.name in self.online:
             self.online[conn.name].discard(conn)
             if not self.online[conn.name]:
@@ -270,19 +275,12 @@ class Hub:
                 name = "%s-%s" % (base, uuid.uuid4().hex[:4])
                 if not self.db.execute("SELECT 1 FROM agents WHERE name=?", (name,)).fetchone():
                     break
-        # Names are exclusive: one live session per name (humans' CLI invocations may share).
+        # Names are exclusive unless force=True (used when re-attaching/waking the same session).
         others = [c for c in self.online.get(name, ()) if c is not conn]
         if others and not (kind == "human" and all(c.kind == "human" for c in others)):
             if not force:
                 raise ValueError("name %r is already in use by another live session. Pick another name, or "
                                  "close that session first (or register with force=true to take it over)." % name)
-            for c in others:  # takeover: e.g. a half-dead connection left behind by a dropped tunnel
-                self._set_offline(c)
-                c.name = None
-                try:
-                    c.writer.close()
-                except Exception:
-                    pass
         now = time.time()
         # Portable upsert (no ON CONFLICT: old distro SQLite builds lack it).
         if self.db.execute("SELECT 1 FROM agents WHERE name=?", (name,)).fetchone():
@@ -519,6 +517,16 @@ class Hub:
         return int(self.db.execute("SELECT COUNT(*) FROM wakes WHERE team=? AND started_at>? AND note!='busy'",
                                    (team, time.time() - 3600)).fetchone()[0])
 
+    def _is_watched(self, agent: str, now: float) -> bool:
+        return bool(self.waiters.get(agent)) or (now - self.last_watch.get(agent, 0.0) < 35.0)
+
+    def _oldest_unread_age(self, agent: str, now: float) -> float:
+        row = self.db.execute(
+            "SELECT MIN(m.created_at) FROM deliveries d JOIN messages m ON m.id = d.message_id "
+            "WHERE d.recipient=? AND d.read_at IS NULL", (agent,)
+        ).fetchone()
+        return (now - float(row[0])) if (row and row[0] is not None) else 0.0
+
     def _candidates(self, host: str) -> List[Dict[str, Any]]:
         now = time.time()
         for a, lease in list(self.leases.items()):
@@ -538,7 +546,7 @@ class Hub:
             opts = json.loads(m["options"] or "{}")
             if (not m["session_id"] and not opts.get("create")) or opts.get("wake") is False:
                 continue
-            if a in self.online or a in self.leases:
+            if a in self.leases:
                 continue
             due = self.last_wake.get(a, 0) + WAKE_COOLDOWN
             if due > now:
@@ -550,6 +558,12 @@ class Hub:
             unread = self._unread_count(a)
             if unread == 0:
                 continue
+            if a in self.online or self._is_watched(a, now):
+                age = self._oldest_unread_age(a, now)
+                grace = 60.0 if self._is_watched(a, now) else 15.0
+                if age < grace:
+                    self.next_due = min(self.next_due, now + (grace - age) + 0.5)
+                    continue
             if self._team_wakes_last_hour(m["team"]) >= WAKE_BUDGET:
                 self.db.execute("UPDATE teams SET status='paused' WHERE name=?", (m["team"],))
                 log("team %s paused: wake budget exhausted" % m["team"])
@@ -681,6 +695,9 @@ class Hub:
     async def op_watch(self, conn: Conn, agent: str, after_seq: int = 0, timeout: float = 50) -> List[Dict[str, Any]]:
         """Unread messages of `agent` newer than after_seq, waiting up to timeout. Does NOT mark them
         read: used to push notifications into a live session, which then reads them via inbox."""
+        conn.watching = agent
+        self.last_watch[agent] = time.time()
+
         def fetch() -> List[Dict[str, Any]]:
             rows = self.db.execute(
                 "SELECT m.* FROM deliveries d JOIN messages m ON m.id = d.message_id "
@@ -697,6 +714,7 @@ class Hub:
                 pass
             finally:
                 self.waiters.get(agent, set()).discard(fut)
+                self.last_watch[agent] = time.time()
             msgs = fetch()
         return msgs
 
@@ -705,6 +723,8 @@ class Hub:
 
     async def op_wait(self, conn: Conn, timeout: float = 30, limit: int = 20) -> Dict[str, Any]:
         name = self._require(conn)
+        conn.watching = name
+        self.last_watch[name] = time.time()
         if self._unread_count(name) == 0:
             fut: "asyncio.Future[None]" = asyncio.get_event_loop().create_future()
             self.waiters.setdefault(name, set()).add(fut)
@@ -714,6 +734,7 @@ class Hub:
                 pass
             finally:
                 self.waiters.get(name, set()).discard(fut)
+                self.last_watch[name] = time.time()
         return self._fetch_unread(name, limit, mark=True)
 
     def op_thread(self, conn: Conn, thread_id: str, limit: int = 200) -> List[Dict[str, Any]]:

@@ -73,6 +73,14 @@ def codex_sessions() -> List[Dict[str, Any]]:
                     pass
     except OSError:
         pass
+    for db in sorted(glob.glob(os.path.join(HOME, ".codex", "state_*.sqlite"))):
+        try:
+            con = sqlite3.connect("file:%s?mode=ro" % db, uri=True, timeout=2)
+            for sid, name in con.execute("SELECT id, name FROM threads WHERE name IS NOT NULL AND name != ''").fetchall():
+                names.setdefault(sid, {"id": sid, "thread_name": name})
+            con.close()
+        except sqlite3.Error:
+            pass
     out = []
     for path in glob.glob(os.path.join(HOME, ".codex", "sessions", "*", "*", "*", "rollout-*.jsonl")):
         m = UUID_RE.search(os.path.basename(path))
@@ -201,6 +209,45 @@ LSOF_SESSION_RE = re.compile(
     r"(?:/presence/|/conversations/|/sessions/\d{4}/\d{2}/\d{2}/rollout-[^/\n]*-)("
     + UUID_RE.pattern + r")(?:\.lock|\.db|\.jsonl)"
 )
+_IGNORE_PROC_MARKERS = (
+    "--type=", "Codex Framework.framework", "SkyComputerUseService", "chrome-extension://",
+    "/Helpers/disclaimer", "language_server",
+)
+
+
+def _classify_agent_proc(args: str) -> Optional[str]:
+    if not args or "youchat" in args or any(m in args for m in _IGNORE_PROC_MARKERS):
+        return None
+    if "app-server" in args and "codex" in args:
+        return "codex-daemon"
+    if re.search(r"(?:^|[/\s])codex(?:\s|$)", args):
+        return "codex"
+    if re.search(r"(?:^|[/\s])agy(?:\s|$)", args):
+        return "agy"
+    if re.search(r"(?:^|[/\s])claude(?:\s|$)", args):
+        return "claude"
+    return None
+
+
+def codex_recent_thread_ids(since_ts: float = 0.0, limit: int = 5) -> List[str]:
+    """Recent Codex thread_ids logged in ~/.codex/logs_*.sqlite (used when `codex resume` picker is used)."""
+    out: List[str] = []
+    for db in sorted(glob.glob(os.path.join(HOME, ".codex", "logs_*.sqlite")), reverse=True):
+        try:
+            con = sqlite3.connect("file:%s?mode=ro" % db, uri=True, timeout=2)
+            rows = con.execute(
+                "SELECT thread_id FROM logs WHERE ts >= ? AND thread_id IS NOT NULL ORDER BY id DESC LIMIT 50",
+                (int(since_ts),),
+            ).fetchall()
+            con.close()
+            for (tid,) in rows:
+                if tid and tid not in out:
+                    out.append(tid)
+                    if len(out) >= limit:
+                        return out
+        except sqlite3.Error:
+            continue
+    return out
 
 
 def lsof_session_ids(pids: List[int]) -> List[str]:
@@ -208,28 +255,78 @@ def lsof_session_ids(pids: List[int]) -> List[str]:
     pids = [p for p in pids if p > 1]
     if not pids:
         return []
-    try:
-        txt = subprocess.run(["lsof", "-Fn", "-p", ",".join(str(p) for p in pids[:32])],
-                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=3).stdout.decode("utf-8", "replace")
-    except (OSError, subprocess.SubprocessError):
-        return []
     out: List[str] = []
-    for u in LSOF_SESSION_RE.findall(txt):
-        if u not in out:
-            out.append(u)
+    for i in range(0, len(pids), 32):
+        chunk = pids[i:i + 32]
+        try:
+            txt = subprocess.run(
+                ["lsof", "-Fn", "-p", ",".join(str(p) for p in chunk)],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=4,
+            ).stdout.decode("utf-8", "replace")
+        except (OSError, subprocess.SubprocessError):
+            continue
+        for u in LSOF_SESSION_RE.findall(txt):
+            if u not in out:
+                out.append(u)
     return out
 
 
 def running_session_ids() -> Set[str]:
-    """Session ids that currently have a live process on this host (Claude registry + CLI flags + open session files)."""
+    """Session ids that currently have a live interactive/CLI process on this host.
+    Note: Codex 0.163+ runs a persistent `codex app-server --managed-daemon` that keeps rollout-*.jsonl open
+    even after all TUI windows exit; we only query that daemon when an interactive `codex` TUI without a CLI
+    UUID (e.g. `codex resume` picker mode) is actually running."""
     ids = set(claude_running().values())
-    agent_pids: List[int] = []
+    lsof_pids: List[int] = []
+    codex_daemon_pids: List[int] = []
+    codex_picker_open = False
     for pid, _ppid, args in _ps():
-        if any(k in args for k in ("claude", "codex", "agy")):
-            ids.update(SESSION_ARG_RE.findall(args))
-            if "youchat" not in args and pid.isdigit():
-                agent_pids.append(int(pid))
-    ids.update(lsof_session_ids(agent_pids))
+        if not pid.isdigit():
+            continue
+        kind = _classify_agent_proc(args)
+        if kind == "codex-daemon":
+            codex_daemon_pids.append(int(pid))
+        elif kind in ("claude", "codex", "agy"):
+            found = SESSION_ARG_RE.findall(args)
+            ids.update(found)
+            if kind in ("codex", "agy"):
+                lsof_pids.append(int(pid))
+            if kind == "codex" and not found and " exec " not in (" " + args + " "):
+                codex_picker_open = True
+    if codex_picker_open:
+        lsof_pids.extend(codex_daemon_pids)
+        ids.update(codex_recent_thread_ids(limit=1))
+    ids.update(lsof_session_ids(lsof_pids))
+    return ids
+
+
+def live_push_session_ids() -> Set[str]:
+    """Session ids currently open on this host in a window that has live push active
+    (`youchat pty` wrapper for agy/codex, or `--dangerously-load-development-channels` for claude)."""
+    rows = [(int(p), int(pp), a) for p, pp, a in _ps() if p.isdigit() and pp.isdigit()]
+    pty_pids = {p for p, _pp, a in rows if "youchat" in a and " pty " in a}
+    claude_map = claude_running()
+    ids: Set[str] = set()
+    lsof_pids: List[int] = []
+    codex_daemon_pids = [p for p, _pp, a in rows if _classify_agent_proc(a) == "codex-daemon"]
+    codex_picker_wrapped = False
+    for pid, ppid, args in rows:
+        kind = _classify_agent_proc(args)
+        if kind == "claude":
+            if "--dangerously-load-development-channels" in args or pid in pty_pids or ppid in pty_pids:
+                if pid in claude_map:
+                    ids.add(claude_map[pid])
+                ids.update(SESSION_ARG_RE.findall(args))
+        elif kind in ("codex", "agy") and (pid in pty_pids or ppid in pty_pids):
+            found = SESSION_ARG_RE.findall(args)
+            ids.update(found)
+            lsof_pids.append(pid)
+            if kind == "codex" and not found:
+                codex_picker_wrapped = True
+    if codex_picker_wrapped:
+        lsof_pids.extend(codex_daemon_pids)
+        ids.update(codex_recent_thread_ids(limit=1))
+    ids.update(lsof_session_ids(lsof_pids))
     return ids
 
 
@@ -256,3 +353,4 @@ def identify_self() -> List[str]:
         if u not in ids:
             ids.append(u)
     return ids
+
