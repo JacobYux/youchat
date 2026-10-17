@@ -216,6 +216,9 @@ def _copy_winsize(src_fd: int, dst_fd: int) -> None:
 def _resolve_identity(hub: HubClient, pid: int, cli_kind: str, args: List[str],
                       cur_agent: str, cur_sid: str, started_at: float = 0.0) -> Tuple[str, str, bool]:
     sids: List[str] = []
+    for u in SESSION_ARG_RE.findall(" ".join(args)):
+        if u not in sids:
+            sids.append(u)
     if cli_kind == "claude":
         csid = claude_running().get(pid)
         if csid and csid not in sids:
@@ -223,13 +226,10 @@ def _resolve_identity(hub: HubClient, pid: int, cli_kind: str, args: List[str],
     for u in lsof_session_ids([pid]):
         if u not in sids:
             sids.append(u)
-    if cli_kind == "codex":
+    if cli_kind == "codex" and not sids and not cur_sid:
         for u in codex_recent_thread_ids(since_ts=max(0.0, started_at - 2.0), limit=1):
             if u not in sids:
                 sids.append(u)
-    for u in SESSION_ARG_RE.findall(" ".join(args)):
-        if u not in sids:
-            sids.append(u)
     if cur_sid and cur_sid not in sids:
         sids.append(cur_sid)
     agent = cur_agent or os.environ.get("YOUCHAT_NAME") or ""
