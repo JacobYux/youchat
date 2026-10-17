@@ -52,9 +52,18 @@ def _real_which(exe: str) -> str:
     base = os.path.basename(exe)
     parts = os.environ.get("PATH", "").split(os.pathsep)
     for d in parts + [p for p in EXTRA_PATH if p not in parts]:
-        cand = os.path.join(d, base)
-        if os.path.isfile(cand) and os.access(cand, os.X_OK) and not _is_youchat_wrapper(cand):
-            return cand
+        for name in (base, base + "-bin"):
+            cand = os.path.join(d, name)
+            if os.path.isfile(cand) and os.access(cand, os.X_OK) and not _is_youchat_wrapper(cand):
+                return cand
+    if base == "codex":
+        cands = sorted(glob.glob("/opt/homebrew/Caskroom/codex/*/bin/codex"))
+        if cands:
+            return cands[-1]
+    if base == "claude":
+        cands = sorted(glob.glob(os.path.expanduser("~/.local/share/claude/versions/*")))
+        if cands:
+            return cands[-1]
     return shutil.which(exe) or exe
 
 

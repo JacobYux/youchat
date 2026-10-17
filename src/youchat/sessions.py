@@ -220,11 +220,11 @@ def _classify_agent_proc(args: str) -> Optional[str]:
         return None
     if "app-server" in args and "codex" in args:
         return "codex-daemon"
-    if re.search(r"(?:^|[/\s])codex(?:\s|$)", args):
+    if re.search(r"(?:^|[/\s])codex(?:-bin)?(?:\s|$)", args):
         return "codex"
-    if re.search(r"(?:^|[/\s])agy(?:\s|$)", args):
+    if re.search(r"(?:^|[/\s])agy(?:-bin)?(?:\s|$)", args):
         return "agy"
-    if re.search(r"(?:^|[/\s])claude(?:\s|$)", args):
+    if re.search(r"(?:^|[/\s])claude(?:-bin)?(?:\s|$)|/claude/versions/", args):
         return "claude"
     return None
 

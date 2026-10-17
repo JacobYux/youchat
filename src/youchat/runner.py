@@ -39,14 +39,25 @@ def search_path() -> str:
 
 def which(exe: str) -> str:
     for d in search_path().split(os.pathsep):
-        cand = os.path.join(d, exe)
-        if os.path.isfile(cand) and os.access(cand, os.X_OK):
-            try:
-                if os.path.getsize(cand) < 512 and b"youchat-pty-wrapper" in open(cand, "rb").read(512):
-                    continue
-            except OSError:
-                pass
-            return cand
+        for name in (exe, exe + "-bin"):
+            cand = os.path.join(d, name)
+            if os.path.isfile(cand) and os.access(cand, os.X_OK):
+                try:
+                    if os.path.getsize(cand) < 512 and b"youchat-pty-wrapper" in open(cand, "rb").read(512):
+                        continue
+                except OSError:
+                    pass
+                return cand
+    if exe == "codex":
+        import glob as _glob
+        cands = sorted(_glob.glob("/opt/homebrew/Caskroom/codex/*/bin/codex"))
+        if cands:
+            return cands[-1]
+    if exe == "claude":
+        import glob as _glob
+        cands = sorted(_glob.glob(os.path.expanduser("~/.local/share/claude/versions/*")))
+        if cands:
+            return cands[-1]
     return shutil.which(exe, path=search_path()) or exe
 
 
