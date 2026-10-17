@@ -264,6 +264,8 @@ def _watcher_loop(master_fd: int, proc: subprocess.Popen, cli_kind: str,
         if not agent:
             time.sleep(2.0)
             continue
+        if last_inject > 0.0 and (time.time() - last_inject >= 25.0) and is_session_idle(cli_kind, sid):
+            last_seq = 0
         try:
             msgs = watcher.call("watch", {"agent": agent, "after_seq": last_seq, "timeout": 10}, timeout=20)
         except HubError:
@@ -272,18 +274,20 @@ def _watcher_loop(master_fd: int, proc: subprocess.Popen, cli_kind: str,
         if not msgs:
             continue
 
-        # Wait until both the user and the TUI session are idle before injecting
+        # Wait until TUI is ready and both the user and the TUI session are idle before injecting
         while proc.poll() is None and not state["stop"]:
             now = time.time()
             if state["line_dirty"] and now - state["last_key"] > 45.0:
                 state["line_dirty"] = False
+            min_boot = 9.0 if cli_kind == "antigravity" else 3.5
+            tui_ready = bool(state.get("tui_ready")) or (now - started_at >= min_boot)
             user_idle = (now - state["last_key"] >= 3.0) and not state["line_dirty"]
-            out_idle = (now - state["last_out"] >= 1.5)
+            out_idle = (now - state["last_out"] >= 1.2)
             cooldown_ok = (now - last_inject >= 25.0)
             _, sid, boost = _resolve_identity(hub, proc.pid, cli_kind, args, agent, sid, started_at)
-            if user_idle and out_idle and cooldown_ok and is_session_idle(cli_kind, sid):
+            if tui_ready and user_idle and out_idle and cooldown_ok and is_session_idle(cli_kind, sid):
                 break
-            time.sleep(1.0)
+            time.sleep(0.8)
 
         if proc.poll() is not None or state["stop"]:
             break
@@ -357,6 +361,7 @@ def run_pty(argv: List[str]) -> int:
         "last_key": 0.0,
         "last_out": time.time(),
         "line_dirty": False,
+        "tui_ready": False,
         "stop": False,
     }
     t = threading.Thread(target=_watcher_loop, args=(master_fd, proc, cli_kind, args, state), daemon=True)
@@ -395,7 +400,12 @@ def run_pty(argv: List[str]) -> int:
                     break
                 if not out:
                     break
-                state["last_out"] = time.time()
+                if b"Quota:" in out and b"sync /usage" not in out and b"Idle" in out:
+                    state["tui_ready"] = True
+                is_tip_only = (b"\xf0\x9f\x92\xa1" in out and len(out) < 220
+                               and b"Working" not in out and b"Generating" not in out)
+                if not is_tip_only:
+                    state["last_out"] = time.time()
                 try:
                     os.write(stdout_fd, out)
                 except OSError:
