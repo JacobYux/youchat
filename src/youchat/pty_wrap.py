@@ -28,7 +28,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from youchat.common import HubClient, HubError
 from youchat.runner import EXTRA_PATH, _agy_transcript_incomplete
-from youchat.sessions import HOME, SESSION_ARG_RE, codex_recent_thread_ids, lsof_session_ids
+from youchat.sessions import HOME, SESSION_ARG_RE, claude_running, codex_recent_thread_ids, lsof_session_ids
 
 HEAVY_KINDS = {"task", "handoff", "review_request"}
 NON_INTERACTIVE_AGY = {"-p", "--print", "mcp", "--help", "-h", "--version", "-v"}
@@ -68,12 +68,13 @@ def _real_which(exe: str) -> str:
 
 
 def _cli_kind(exe: str) -> str:
-    base = os.path.basename(exe).lower()
-    if "codex" in base:
+    low = exe.lower()
+    base = os.path.basename(low)
+    if "codex" in base or "/codex/" in low:
         return "codex"
-    if "agy" in base or "antigravity" in base:
+    if "agy" in base or "antigravity" in base or "/antigravity" in low:
         return "antigravity"
-    if "claude" in base:
+    if "claude" in base or "/claude/" in low:
         return "claude"
     return "agent"
 
@@ -190,6 +191,8 @@ def _session_mtime(cli_kind: str, sid: str) -> float:
     if cli_kind == "antigravity":
         p = os.path.join(HOME, ".gemini", "antigravity-cli", "brain", sid,
                          ".system_generated", "logs", "transcript.jsonl")
+    elif cli_kind == "claude":
+        p = _claude_session_path(sid) or ""
     else:
         p = _codex_rollout_path(sid) or ""
     try:
@@ -213,6 +216,10 @@ def _copy_winsize(src_fd: int, dst_fd: int) -> None:
 def _resolve_identity(hub: HubClient, pid: int, cli_kind: str, args: List[str],
                       cur_agent: str, cur_sid: str, started_at: float = 0.0) -> Tuple[str, str, bool]:
     sids: List[str] = []
+    if cli_kind == "claude":
+        csid = claude_running().get(pid)
+        if csid and csid not in sids:
+            sids.append(csid)
     for u in lsof_session_ids([pid]):
         if u not in sids:
             sids.append(u)
@@ -279,7 +286,7 @@ def _watcher_loop(master_fd: int, proc: subprocess.Popen, cli_kind: str,
             now = time.time()
             if state["line_dirty"] and now - state["last_key"] > 45.0:
                 state["line_dirty"] = False
-            min_boot = 9.0 if cli_kind == "antigravity" else 3.5
+            min_boot = 9.0 if cli_kind == "antigravity" else (6.0 if cli_kind == "claude" else 3.5)
             tui_ready = bool(state.get("tui_ready")) or (now - started_at >= min_boot)
             user_idle = (now - state["last_key"] >= 3.0) and not state["line_dirty"]
             out_idle = (now - state["last_out"] >= 1.2)
@@ -330,12 +337,10 @@ def run_pty(argv: List[str]) -> int:
     exe = _real_which(argv[0])
     args = list(argv[1:])
     cli_kind = _cli_kind(exe)
-    if cli_kind == "claude":
-        if should_wrap(cli_kind, args) and "--dangerously-load-development-channels" not in args:
-            args = ["--dangerously-load-development-channels", "server:youchat"] + args
-        os.execvp(exe, [exe] + args)
     if not should_wrap(cli_kind, args):
         os.execvp(exe, [exe] + args)
+    if cli_kind == "claude" and "--dangerously-load-development-channels" not in args:
+        args = ["--dangerously-load-development-channels", "server:youchat"] + args
 
     stdin_fd = sys.stdin.fileno()
     stdout_fd = sys.stdout.fileno()
