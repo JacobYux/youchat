@@ -258,7 +258,7 @@ class Wake(unittest.TestCase):
         proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(10)"],
                                 stdin=slave, stdout=slave, stderr=slave, close_fds=True)
         os.close(slave)
-        state = {"last_key": 0.0, "last_out": time.time() - 5.0, "line_dirty": False, "stop": False}
+        state = {"last_key": 0.0, "last_out": time.time() - 5.0, "line_dirty": False, "tui_ready": True, "stop": False}
         t = threading.Thread(target=_watcher_loop,
                              args=(master, proc, "antigravity", ["--conversation", sid], state), daemon=True)
         t.start()

@@ -143,8 +143,10 @@ class HubClient:
         raise AssertionError("unreachable")
 
     def register(self, kind: str, name: Optional[str] = None, description: Optional[str] = None,
-                 host: Optional[str] = None, force: bool = False) -> Dict[str, Any]:
-        args = {"kind": kind, "host": host or short_host(), "name": name, "description": description}
+                 host: Optional[str] = None, force: bool = False,
+                 session_id: Optional[str] = None) -> Dict[str, Any]:
+        args = {"kind": kind, "host": host or short_host(), "name": name, "description": description,
+                "session_id": session_id}
         res = self.call("hello", dict(args, force=force or None))
         self.hello_args = {k: v for k, v in args.items() if v is not None}
         self.hello_args["name"] = res["name"]

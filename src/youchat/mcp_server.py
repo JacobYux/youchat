@@ -296,7 +296,8 @@ class McpServer:
                 if name:
                     try:
                         self.hub.register(kind=self.kind(), name=name, force=True,
-                                          description=os.environ.get("YOUCHAT_DESC") or None)
+                                          description=os.environ.get("YOUCHAT_DESC") or None,
+                                          session_id=self.self_session_id())
                     except HubError:
                         pass
             else:
@@ -309,6 +310,14 @@ class McpServer:
     # -- identity --------------------------------------------------------------------
     def kind(self) -> str:
         return os.environ.get("YOUCHAT_KIND") or guess_kind(self.client_name)
+
+    def self_session_id(self) -> Optional[str]:
+        try:
+            from youchat.sessions import identify_self
+            ids = identify_self()
+            return ids[0] if ids else None
+        except Exception:
+            return None
 
     def auto_name(self) -> Optional[str]:
         """YOUCHAT_NAME, else the team member whose session id is one of our parent processes'
@@ -328,7 +337,8 @@ class McpServer:
         if self.hub.name is None:
             auto = self.auto_name()
             self.hub.register(kind=self.kind(), name=auto, force=bool(auto),
-                              description=os.environ.get("YOUCHAT_DESC") or None)
+                              description=os.environ.get("YOUCHAT_DESC") or None,
+                              session_id=self.self_session_id())
         return self.hub.name or ""
 
     def _briefing(self, teams: List[Dict[str, Any]]) -> str:
@@ -340,13 +350,14 @@ class McpServer:
     # -- tools -----------------------------------------------------------------------
     def tool_register(self, name: Optional[str] = None, description: Optional[str] = None,
                       force: bool = False) -> str:
-        res = self.hub.register(kind=self.kind(), name=name or self.hub.name, description=description, force=force)
+        res = self.hub.register(kind=self.kind(), name=name or self.hub.name, description=description,
+                                force=force, session_id=self.self_session_id())
         return "You are registered on youchat as '%s' (%d unread).\n\n%s" % (
             res["name"], res["unread"], self._briefing(res.get("teams") or []))
 
     def tool_join_team(self, team: str, name: Optional[str] = None, role: Optional[str] = None) -> str:
         if name and name != self.hub.name:
-            self.hub.register(kind=self.kind(), name=name)
+            self.hub.register(kind=self.kind(), name=name, session_id=self.self_session_id())
         me = self.ensure_registered()
         t = self.hub.call("team_get", {"name": team})
         if role or not any(m["agent"] == me for m in t["members"]):
@@ -354,7 +365,8 @@ class McpServer:
                 return ("You are not a member of team %s yet. Ask the user (or the coordinator) for your role, "
                         "then call join_team again with role.\n\n%s" % (team, fmt_team(t, me)))
             t = self.hub.call("team_add", {"team": team, "agent": me, "role": role, "cli": self.kind(),
-                                           "host": self.hub.hello_args.get("host") if self.hub.hello_args else None})
+                                           "host": self.hub.hello_args.get("host") if self.hub.hello_args else None,
+                                           "session_id": self.self_session_id()})
         return "Joined team %s as %s.\n\n%s" % (team, me, fmt_team(t, me))
 
     def tool_list_agents(self) -> str:

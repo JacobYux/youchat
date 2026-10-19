@@ -144,6 +144,7 @@ class Hub:
                         (time.time(),))
         os.chmod(db_path, 0o600)
         self.online: Dict[str, Set[Conn]] = {}
+        self.session_owner: Dict[str, str] = {}      # session_id -> agent name (including non-team agents)
         self.waiters: Dict[str, Set["asyncio.Future[None]"]] = {}
         self.last_watch: Dict[str, float] = {}
         # wake scheduling (phase 2b)
@@ -264,7 +265,8 @@ class Hub:
         return {"pong": True, "time": time.time()}
 
     def op_hello(self, conn: Conn, kind: str, host: str, name: Optional[str] = None,
-                 description: Optional[str] = None, force: bool = False) -> Dict[str, Any]:
+                 description: Optional[str] = None, force: bool = False,
+                 session_id: Optional[str] = None) -> Dict[str, Any]:
         kind = (kind or "agent").lower()
         if name:
             if not NAME_RE.match(name):
@@ -291,10 +293,13 @@ class Hub:
             self.db.execute(
                 "INSERT INTO agents(name, kind, host, description, created_at, last_seen) VALUES(?,?,?,?,?,?)",
                 (name, kind, host, description or "", now, now))
-        # Members added by a coordinator may lack host/cli: learn them from the session itself.
+        # Members added by a coordinator may lack host/cli/session_id: learn them from the session itself.
         self.db.execute("UPDATE members SET host=? WHERE agent=? AND host=''", (host, name))
         if kind in WAKEABLE_CLIS:
             self.db.execute("UPDATE members SET cli=? WHERE agent=? AND cli=''", (kind, name))
+        if session_id:
+            self.session_owner[session_id] = name
+            self.db.execute("UPDATE members SET session_id=? WHERE agent=? AND session_id=''", (session_id, name))
         conn.kind = kind
         if kind == "runner":  # a (re)started runner: jobs leased by its previous incarnation are gone
             for a, lease in list(self.leases.items()):
@@ -511,6 +516,8 @@ class Hub:
                                   (sid,)).fetchone()
             if row:
                 return {"agent": row[0], "team": row[1], "session_id": sid}
+            if sid in self.session_owner:
+                return {"agent": self.session_owner[sid], "team": "", "session_id": sid}
         return {"agent": None}
 
     def _team_wakes_last_hour(self, team: str) -> int:
