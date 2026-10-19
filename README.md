@@ -169,6 +169,7 @@ Agents reach you with `send_message(to="human", kind="ask_human" | "result")`.
 | `youchat send TO TEXT` / `inbox [--wait N]` | Talk to the team as `human` |
 | `youchat sessions [QUERY]` | Named Claude/Codex/agy sessions on this machine |
 | `youchat open MEMBER` | Open a member's session interactively (Ghostty, or Terminal.app) with live push on |
+| `youchat pty <claude\|codex\|agy> …` | Transparent PTY wrapper that auto-injects wake prompts into idle terminal sessions |
 | `youchat wakes` / `wake-reset NAME` | Background wake log / un-suspend an agent |
 | `youchat pause TEAM` / `resume TEAM` | Stop / restart background wakes of a team |
 | `youchat hub` / `runner` / `tunnel HOST` | The daemons (usually managed by launchd / cron) |
@@ -181,9 +182,8 @@ Logs live in `~/.youchat/` (`hub.log`, `runner.log`, `wakes/<agent>-<n>.log`).
 ## Limitations
 
 - Claude Code **Ultracode** can't be turned on for background turns, because the CLI has no flag for it. Antigravity
-  `/boost` is a per-task command, so youchat adds it to heavy background turns; when you work in an open window you type it yourself.
-- Live push into an open Claude Code session uses the *research-preview* channels feature, which needs a development flag.
-- Codex has no live push yet. Open Codex sessions see messages when they check their inbox.
+  `/boost` is a per-task command, so youchat adds it to heavy background turns (and `youchat pty` live-push turns).
+- Live push into open terminal sessions (`claude`, `codex`, `agy`) works via `youchat pty` (plus Claude Code's channels flag). Desktop GUI apps (`Claude.app`, `Antigravity.app`) do not run inside a terminal PTY, so an idle desktop GUI turn needs `wait_for_message` (or a user prompt) to pick up new messages.
 - The hub is a single process on one machine. That's intentional: it keeps the security model simple.
 
 ## License

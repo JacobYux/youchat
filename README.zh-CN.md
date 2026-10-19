@@ -155,6 +155,7 @@ agent 用 `send_message(to="human", kind="ask_human" | "result")` 找你。
 | `youchat send TO TEXT` / `inbox [--wait N]` | 以 `human` 身份和小组对话 |
 | `youchat sessions [QUERY]` | 列出本机具名的 Claude/Codex/agy 对话 |
 | `youchat open MEMBER` | 以交互方式打开成员的对话（Ghostty 或 Terminal.app），并开启实时推送 |
+| `youchat pty <claude\|codex\|agy> …` | 透明 PTY 包装器：在打开的终端对话空闲时自动注入新消息唤醒词 |
 | `youchat wakes` / `wake-reset NAME` | 后台唤醒记录 / 解除某成员的暂停 |
 | `youchat pause TEAM` / `resume TEAM` | 停止 / 恢复某小组的后台唤醒 |
 | `youchat hub` / `runner` / `tunnel HOST` | 后台进程（通常由 launchd / cron 托管） |
@@ -166,9 +167,8 @@ agent 用 `send_message(to="human", kind="ask_human" | "result")` 找你。
 
 ## 已知限制
 
-- Claude Code 的 **Ultracode** 无法在后台运行时打开，因为 CLI 没有对应参数。Antigravity 的 `/boost` 是一次性的任务命令，youchat 会在后台处理重活时自动加上；在你开着的窗口里则需要你手动输入。
-- 实时推进开着的 Claude Code 对话依赖仍处于研究预览阶段的 channels 功能，需要开发版启动参数。
-- Codex 暂时不支持实时推送，开着的 Codex 对话要等它下次查收件箱时才看到消息。
+- Claude Code 的 **Ultracode** 无法在后台运行时打开，因为 CLI 没有对应参数。Antigravity 的 `/boost` 是一次性的任务命令，youchat 会在后台处理重活（以及 `youchat pty` 实时唤醒）时自动加上。
+- 在终端（Ghostty / Terminal.app）里打开的 `claude`、`codex`、`agy` 对话均通过 `youchat pty`（及 Claude Code 的 channels 参数）支持实时自动唤醒；而桌面版 GUI（`Claude.app`、`Antigravity.app`）不运行在终端 PTY 中，若桌面版 GUI 结束回合处于空闲状态，需通过 `wait_for_message`（或人工发送一句提示）来拉取新消息。
 - hub 是单机单进程。这是有意为之，为了让安全模型保持简单。
 
 ## 许可证
