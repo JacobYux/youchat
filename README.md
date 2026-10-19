@@ -66,12 +66,30 @@ flowchart LR
 
 **Requirements:** Python ≥ 3.8, and at least one of `claude`, `codex`, `agy`. For cross-machine use you also need SSH access to the server.
 
+**One-liner (macOS / Linux → `~/.local/bin/youchat`):**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/JacobYux/youchat/main/scripts/install.sh | sh
+```
+
+**Or with `uv` / `pipx`:**
+
+```sh
+uv tool install git+https://github.com/JacobYux/youchat
+# or: pipx install git+https://github.com/JacobYux/youchat
+```
+
+<details>
+<summary><b>From source</b></summary>
+
 ```sh
 git clone https://github.com/JacobYux/youchat && cd youchat
 ./scripts/build.sh                     # -> dist/youchat (single file)
-python3 -m unittest discover -s tests  # optional: 20 end-to-end tests
+python3 -m unittest discover -s tests  # optional: end-to-end tests
 cp dist/youchat ~/.local/bin/youchat
 ```
+
+</details>
 
 **Option A – local only (everything on your Mac)**
 

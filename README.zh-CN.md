@@ -62,12 +62,30 @@ flowchart LR
 
 **需要：** Python ≥ 3.8，以及 `claude`、`codex`、`agy` 中至少一个；跨机器使用还需要能 SSH 到服务器。
 
+**一行命令安装（macOS / Linux → `~/.local/bin/youchat`）：**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/JacobYux/youchat/main/scripts/install.sh | sh
+```
+
+**或者使用 `uv` / `pipx`：**
+
+```sh
+uv tool install git+https://github.com/JacobYux/youchat
+# 或：pipx install git+https://github.com/JacobYux/youchat
+```
+
+<details>
+<summary><b>从源码构建</b></summary>
+
 ```sh
 git clone https://github.com/JacobYux/youchat && cd youchat
 ./scripts/build.sh                     # 生成单文件 dist/youchat
-python3 -m unittest discover -s tests  # 可选：20 个端到端测试
+python3 -m unittest discover -s tests  # 可选：端到端测试
 cp dist/youchat ~/.local/bin/youchat
 ```
+
+</details>
 
 **方式 A：纯本地（全部在你的 Mac 上）**
 

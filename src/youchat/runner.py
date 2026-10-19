@@ -307,9 +307,23 @@ class Runner:
                 time.sleep(2 ** attempt)
 
     def _should_yield_open(self, job: Dict[str, Any], sid: str) -> bool:
+        cli, agent = job["cli"], job["agent"]
+        if cli == "antigravity" and sid:
+            desktop_dir = os.path.expanduser("~/.gemini/antigravity/brain/%s" % sid)
+            cli_db = os.path.expanduser("~/.gemini/antigravity-cli/conversations/%s.db" % sid)
+            if os.path.isdir(desktop_dir) and not os.path.exists(cli_db):
+                now = time.time()
+                if now - self.last_unwrapped_notice.get(agent, 0.0) >= 300.0:
+                    self.last_unwrapped_notice[agent] = now
+                    notify_desktop(
+                        "youchat · %s 有 %d 条新消息" % (agent, job.get("unread") or 1),
+                        "该会话位于 Antigravity 桌面版（GUI），请在窗口内触发一次 check_inbox。",
+                    )
+                log("wake %s: %s session %s is an Antigravity Desktop GUI session; notified user"
+                    % (job["wake_id"], agent, sid))
+                return True
         if not sid or sid not in running_session_ids():
             return False
-        cli, agent = job["cli"], job["agent"]
         from youchat.pty_wrap import is_session_idle
         from youchat.sessions import live_push_session_ids
         if sid in live_push_session_ids():
