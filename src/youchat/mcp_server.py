@@ -294,16 +294,16 @@ class McpServer:
         """Ping regularly so presence recovers by itself after a hub restart or tunnel drop
         (the client reconnects and re-claims its name), even while the agent is idle."""
         while True:
-            if not self.hub.name:
+            if not self.hub.name or ("@" in self.hub.name and not os.environ.get("YOUCHAT_NAME")):
                 name = self.auto_name()
-                if name:
+                if name and name != self.hub.name:
                     try:
                         self.hub.register(kind=self.kind(), name=name, force=True,
                                           description=os.environ.get("YOUCHAT_DESC") or None,
                                           session_id=self.self_session_id())
                     except HubError:
                         pass
-            else:
+            if self.hub.name:
                 try:
                     self.hub.call("ping", timeout=10)
                 except HubError:
@@ -342,6 +342,12 @@ class McpServer:
             self.hub.register(kind=self.kind(), name=auto, force=bool(auto),
                               description=os.environ.get("YOUCHAT_DESC") or None,
                               session_id=self.self_session_id())
+        elif "@" in self.hub.name and not os.environ.get("YOUCHAT_NAME"):
+            auto = self.auto_name()
+            if auto and auto != self.hub.name:
+                self.hub.register(kind=self.kind(), name=auto, force=True,
+                                  description=os.environ.get("YOUCHAT_DESC") or None,
+                                  session_id=self.self_session_id())
         return self.hub.name or ""
 
     def _briefing(self, teams: List[Dict[str, Any]]) -> str:

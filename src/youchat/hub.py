@@ -130,6 +130,8 @@ class Conn:
         self.name: Optional[str] = None
         self.kind: str = ""
         self.watching: Optional[str] = None
+        self.stale_seq: Optional[int] = None
+        self.stale_hwm: int = 0
 
 
 class Hub:
@@ -716,12 +718,22 @@ class Hub:
             if seq > 0:
                 max_seq = int(self.db.execute("SELECT COALESCE(MAX(seq), 0) FROM messages").fetchone()[0])
                 if seq > max_seq:
-                    seq = 0
+                    if conn.stale_seq != seq:
+                        conn.stale_seq = seq
+                        conn.stale_hwm = 0
+                        seq = 0
+                    else:
+                        seq = conn.stale_hwm
+                else:
+                    conn.stale_seq = None
             rows = self.db.execute(
                 "SELECT m.* FROM deliveries d JOIN messages m ON m.id = d.message_id "
                 "WHERE d.recipient=? AND d.read_at IS NULL AND m.seq>? ORDER BY m.seq LIMIT 50",
                 (agent, seq)).fetchall()
-            return [dict(r) for r in rows]
+            out = [dict(r) for r in rows]
+            if out and conn.stale_seq is not None:
+                conn.stale_hwm = max(conn.stale_hwm, max(int(m["seq"]) for m in out))
+            return out
         msgs = fetch()
         if not msgs:
             fut: "asyncio.Future[None]" = asyncio.get_event_loop().create_future()

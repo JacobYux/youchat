@@ -108,6 +108,13 @@ def _claude_session_path(sid: str) -> Optional[str]:
     return max(matches, key=os.path.getmtime) if matches else None
 
 
+def _tail_lines(path: str, n: int = 20) -> List[str]:
+    with open(path, "rb") as f:
+        f.seek(0, os.SEEK_END)
+        f.seek(max(0, f.tell() - 65536))
+        return f.read().decode("utf-8", errors="replace").splitlines()[-n:]
+
+
 def is_session_idle(cli_kind: str, sid: str) -> bool:
     """True when the agent's on-disk session log shows no turn is currently in flight."""
     if not sid:
@@ -131,8 +138,7 @@ def is_session_idle(cli_kind: str, sid: str) -> bool:
         try:
             if now - os.path.getmtime(path) < 2.0:
                 return False
-            with open(path, encoding="utf-8", errors="replace") as f:
-                lines = f.readlines()[-20:]
+            lines = _tail_lines(path, 20)
         except OSError:
             return True
         for line in reversed(lines):
@@ -155,8 +161,7 @@ def is_session_idle(cli_kind: str, sid: str) -> bool:
             mtime = os.path.getmtime(path)
             if now - mtime < 10.0:
                 return False
-            with open(path, encoding="utf-8", errors="replace") as f:
-                lines = f.readlines()[-20:]
+            lines = _tail_lines(path, 20)
         except OSError:
             return True
         for line in reversed(lines):
