@@ -268,12 +268,24 @@ def cmd_service(a: argparse.Namespace) -> None:
     os.makedirs(agents_dir, exist_ok=True)
     uid = os.getuid()
     base = self_command()
+    if a.hub and a.tunnel:
+        raise SystemExit("cannot install both --hub (local hub) and --tunnel (remote hub) at the same time")
     specs = []
+    cleanup_labels = []
     if a.hub:  # local-only mode: the hub runs on this Mac
         specs.append(("com.youchat.hub", base + ["hub"]))
+        cleanup_labels.append("com.youchat.tunnel")
     if a.tunnel:
         specs.append(("com.youchat.tunnel", base + ["tunnel", a.tunnel]))
+        cleanup_labels.append("com.youchat.hub")
     specs.append(("com.youchat.runner", base + ["runner"] + (["--pre", a.pre] if a.pre else [])))
+    for clabel in cleanup_labels:
+        cplist = os.path.join(agents_dir, clabel + ".plist")
+        subprocess.run(["launchctl", "bootout", "gui/%d/%s" % (uid, clabel)],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if os.path.exists(cplist):
+            os.unlink(cplist)
+            print("removed conflicting", clabel)
     if a.action == "uninstall":
         specs = [("com.youchat.hub", []), ("com.youchat.tunnel", []), ("com.youchat.runner", [])]
     for label, argv in specs:

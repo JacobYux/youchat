@@ -339,12 +339,14 @@ def identify_self() -> List[str]:
     ancestors: List[int] = []
     pid = os.getppid()
     for _ in range(8):
-        ancestors.append(pid)
         if pid in claude:
             ids.append(claude[pid])
         if pid in rows:
-            ids += [u for u in SESSION_ARG_RE.findall(rows[pid][1]) if u not in ids]
-            pid = rows[pid][0]
+            ppid, args = rows[pid]
+            ids += [u for u in SESSION_ARG_RE.findall(args) if u not in ids]
+            if _classify_agent_proc(args) in ("claude", "codex", "agy"):
+                ancestors.append(pid)
+            pid = ppid
         else:
             break
         if pid <= 1:

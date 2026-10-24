@@ -702,14 +702,25 @@ class Hub:
     async def op_watch(self, conn: Conn, agent: str, after_seq: int = 0, timeout: float = 50) -> List[Dict[str, Any]]:
         """Unread messages of `agent` newer than after_seq, waiting up to timeout. Does NOT mark them
         read: used to push notifications into a live session, which then reads them via inbox."""
+        alias_map = {
+            "X86-DEV-AGY-1": "DFI-DEV-AGY-1",
+            "X86-DEV-CDX-1": "DFI-DEV-CDX-1",
+            "X86-RUN-CDX-1": "DFI-RUN-CDX-1",
+        }
+        agent = alias_map.get(agent, agent)
         conn.watching = agent
         self.last_watch[agent] = time.time()
 
         def fetch() -> List[Dict[str, Any]]:
+            seq = int(after_seq)
+            if seq > 0:
+                max_seq = int(self.db.execute("SELECT COALESCE(MAX(seq), 0) FROM messages").fetchone()[0])
+                if seq > max_seq:
+                    seq = 0
             rows = self.db.execute(
                 "SELECT m.* FROM deliveries d JOIN messages m ON m.id = d.message_id "
                 "WHERE d.recipient=? AND d.read_at IS NULL AND m.seq>? ORDER BY m.seq LIMIT 50",
-                (agent, int(after_seq))).fetchall()
+                (agent, seq)).fetchall()
             return [dict(r) for r in rows]
         msgs = fetch()
         if not msgs:
@@ -833,10 +844,35 @@ def _daemonize(log_path: str) -> None:
     os.dup2(fd, 2)
 
 
+def _tunnel_is_active(path: str) -> Optional[str]:
+    """Return a description if a `youchat tunnel` or `ssh -L <path>:...` is running on this host."""
+    try:
+        from youchat.sessions import _ps
+        my_pid = str(os.getpid())
+        for pid, _ppid, args in _ps():
+            if pid == my_pid or not args:
+                continue
+            if ("youchat" in args and " tunnel " in (" " + args + " ")) or (
+                "ssh " in (" " + args) and ("-L " + path + ":") in args
+            ):
+                return "pid %s: %s" % (pid, args.strip())
+    except Exception:
+        pass
+    return None
+
+
 def run_hub(daemon: bool = False) -> None:
     path = sock_path()
     ensure_home()
     ensure_sock_dir()
+    tunnel_info = _tunnel_is_active(path)
+    if tunnel_info:
+        if daemon:
+            return
+        raise SystemExit(
+            "youchat tunnel is active (%s); refusing to start a local hub on %s to avoid local/remote hub.db split-brain"
+            % (tunnel_info, path)
+        )
     if os.path.exists(path):
         if _socket_is_live(path):
             if daemon:  # idempotent: safe to call from cron every few minutes

@@ -274,8 +274,11 @@ class McpServer:
             try:
                 msgs = watcher.call("watch", {"agent": name, "after_seq": last_seq, "timeout": 50}, timeout=70)
             except HubError:
+                last_seq = 0
                 time.sleep(5)
                 continue
+            if msgs and max(int(m["seq"]) for m in msgs) < last_seq:
+                last_seq = 0
             for m in msgs:
                 last_seq = max(last_seq, int(m["seq"]))
                 body = m["body"] if len(m["body"]) <= 8000 else m["body"][:8000] + "\n…(truncated; see check_inbox)"
@@ -505,7 +508,8 @@ class McpServer:
                 name = self.auto_name()
                 if name:
                     self.hub.register(kind=self.kind(), name=name, force=True,
-                                      description=os.environ.get("YOUCHAT_DESC") or None)
+                                      description=os.environ.get("YOUCHAT_DESC") or None,
+                                      session_id=self.self_session_id())
             except HubError as e:
                 print("youchat: could not register yet: %s" % e, file=sys.stderr)
             caps: Dict[str, Any] = {"tools": {"listChanged": False}}

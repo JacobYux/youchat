@@ -285,6 +285,13 @@ class E2E(unittest.TestCase):
         self.assertTrue(lines[1]["result"]["isError"])
         self.assertIn("youchat tunnel", lines[1]["result"]["content"][0]["text"])
 
+    def test_watch_resets_after_seq_on_hub_switch(self):
+        a, b = self.agent("W-A"), self.agent("W-B")
+        a.call("send", {"to": "W-B", "body": "after db reset"})
+        msgs = b.call("watch", {"agent": "W-B", "after_seq": 999999, "timeout": 0})
+        self.assertEqual(len(msgs), 1)
+        self.assertEqual(msgs[0]["body"], "after db reset")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -232,11 +232,11 @@ def _resolve_identity(hub: HubClient, pid: int, cli_kind: str, args: List[str],
                 sids.append(u)
     if cur_sid and cur_sid not in sids:
         sids.append(cur_sid)
-    agent = cur_agent or os.environ.get("YOUCHAT_NAME") or ""
+    agent = os.environ.get("YOUCHAT_NAME") or cur_agent or ""
     sid = sids[0] if sids else cur_sid
     boost = False
     try:
-        if sids and (not agent or sids[0] != cur_sid):
+        if sids and not os.environ.get("YOUCHAT_NAME"):
             who = hub.call("whois_session", {"session_ids": sids}, timeout=5)
             if who.get("agent"):
                 agent = who["agent"]
@@ -276,10 +276,13 @@ def _watcher_loop(master_fd: int, proc: subprocess.Popen, cli_kind: str,
         try:
             msgs = watcher.call("watch", {"agent": agent, "after_seq": last_seq, "timeout": 10}, timeout=20)
         except HubError:
+            last_seq = 0
             time.sleep(3.0)
             continue
         if not msgs:
             continue
+        if max(int(m["seq"]) for m in msgs) < last_seq:
+            last_seq = 0
 
         # Wait until TUI is ready and both the user and the TUI session are idle before injecting
         while proc.poll() is None and not state["stop"]:
