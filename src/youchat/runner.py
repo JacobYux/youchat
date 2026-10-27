@@ -325,10 +325,18 @@ class Runner:
         if not sid or sid not in running_session_ids():
             return False
         from youchat.pty_wrap import is_session_idle
-        from youchat.sessions import live_push_session_ids
+        from youchat.sessions import claude_live_records, live_push_session_ids
         if sid in live_push_session_ids():
             log("wake %s: %s session %s is open with live push; not driving in parallel" % (job["wake_id"], agent, sid))
             return True
+        if cli == "claude":
+            rec = claude_live_records().get(sid)
+            sock_path = (rec or {}).get("messagingSocketPath") or ""
+            if sock_path and os.path.exists(sock_path):
+                return False
+            if rec and rec.get("status") == "busy":
+                log("wake %s: %s session %s is actively running a turn (status=busy); yielding" % (job["wake_id"], agent, sid))
+                return True
         if not is_session_idle(cli, sid):
             log("wake %s: %s session %s is actively running a turn; yielding" % (job["wake_id"], agent, sid))
             return True
@@ -345,14 +353,108 @@ class Runner:
             log("wake %s: %s session %s is open in unwrapped %s (locked); notified user"
                 % (job["wake_id"], agent, sid, cli))
             return True
-        log("wake %s: %s session %s is open in unwrapped %s window and idle; driving headless turn"
+        log("wake %s: %s session %s is open in unwrapped %s window and idle; driving turn"
             % (job["wake_id"], agent, sid, cli))
         return False
+
+    def _drive_claude_socket(self, job: Dict[str, Any], sid: str) -> bool:
+        import glob
+        import socket
+        from youchat.pty_wrap import is_session_idle
+        from youchat.sessions import claude_live_records, live_push_session_ids
+        if not sid or sid in live_push_session_ids():
+            return False
+        rec = claude_live_records().get(sid)
+        sock_path = (rec or {}).get("messagingSocketPath") or ""
+        pid = int((rec or {}).get("pid") or 0)
+        if not sock_path or not pid or not os.path.exists(sock_path):
+            return False
+        agent = job["agent"]
+        started = time.time()
+        deadline = started + max(60.0, float(job.get("lease_seconds", 10800)) - 60.0)
+        if rec.get("status") == "busy" or not is_session_idle("claude", sid):
+            log("wake %s: %s session %s is busy in live Claude window; waiting for turn end"
+                % (job["wake_id"], agent, sid[:8]))
+            while time.time() < deadline:
+                time.sleep(1.5)
+                cur = claude_live_records().get(sid)
+                if not cur:
+                    return False
+                if cur.get("status") != "busy" and is_session_idle("claude", sid):
+                    break
+            try:
+                if not HubClient().call("watch", {"agent": agent, "after_seq": 0, "timeout": 0}, timeout=5):
+                    log("wake %s: %s already read its inbox during previous turn" % (job["wake_id"], agent))
+                    self._done(job, 0, None, "already-read")
+                    return True
+            except Exception:
+                pass
+        try:
+            sp = os.path.expanduser("~/.claude/settings.json")
+            if os.path.isfile(sp):
+                with open(sp, encoding="utf-8") as f:
+                    cfg = json.load(f)
+                if isinstance(cfg, dict) and cfg.get("crossSessionInbound") != "accept":
+                    cfg["crossSessionInbound"] = "accept"
+                    with open(sp, "w", encoding="utf-8") as f:
+                        json.dump(cfg, f, ensure_ascii=False, indent=2)
+                    time.sleep(0.3)
+        except Exception:
+            pass
+        token = ""
+        for kp in glob.glob(os.path.expanduser("~/.claude/sessions/%d.*.key" % pid)):
+            try:
+                token = json.load(open(kp, encoding="utf-8")).get("peerToken") or ""
+                if token:
+                    break
+            except Exception:
+                continue
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(5.0)
+        try:
+            s.connect(sock_path)
+            if token:
+                s.sendall((json.dumps({"type": "auth", "token": token}) + "\n").encode("utf-8"))
+            payload = {"type": "user", "session_id": sid, "priority": "next", "from": "youchat",
+                       "message": {"role": "user", "content": job["prompt"]}}
+            s.sendall((json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8"))
+        except OSError:
+            return False
+        finally:
+            s.close()
+        logpath = os.path.join(self.logdir, "%s-%s.log" % (agent, job["wake_id"]))
+        inject_ts = time.time()
+        log("wake %s: %s (claude %s) injected into live session via %s"
+            % (job["wake_id"], agent, sid[:8], sock_path))
+        try:
+            with open(logpath, "wb") as out:
+                os.chmod(logpath, 0o600)
+                out.write(("injected into live claude socket %s (pid=%d, sid=%s)\n\n%s\n"
+                           % (sock_path, pid, sid, job["prompt"])).encode("utf-8"))
+        except OSError:
+            pass
+        saw_busy = False
+        while time.time() < deadline:
+            time.sleep(1.5)
+            cur = claude_live_records().get(sid)
+            if not cur:
+                break
+            if cur.get("status") == "busy" or not is_session_idle("claude", sid):
+                saw_busy = True
+                continue
+            if saw_busy or (time.time() - inject_ts >= 8.0 and is_session_idle("claude", sid)):
+                break
+        log("wake %s: %s finished exit=0 in %.0fs (live-socket %s)"
+            % (job["wake_id"], agent, time.time() - started, sock_path))
+        self._done(job, 0, None, "live-socket")
+        return True
 
     def _run_job(self, job: Dict[str, Any]) -> None:
         agent, sid = job["agent"], job.get("session_id") or ""
         if self._should_yield_open(job, sid):
             self._done(job, None, None, "busy")
+            return
+        if job["cli"] == "claude" and sid and self._drive_claude_socket(job, sid):
             return
         try:
             cmd, notes = build_command(job)

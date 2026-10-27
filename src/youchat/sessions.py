@@ -191,6 +191,22 @@ def claude_running() -> Dict[int, str]:
     return out
 
 
+def claude_live_records() -> Dict[str, Dict[str, Any]]:
+    """sessionId -> record dict of live Claude Code processes (from ~/.claude/sessions/<pid>.json)."""
+    out: Dict[str, Dict[str, Any]] = {}
+    for path in glob.glob(os.path.join(HOME, ".claude", "sessions", "*.json")):
+        try:
+            with open(path, encoding="utf-8") as f:
+                d = json.load(f)
+            pid = int(d.get("pid") or 0)
+            sid = d.get("sessionId") or ""
+            if pid and sid and _pid_alive(pid):
+                out[sid] = d
+        except (OSError, ValueError, TypeError):
+            continue
+    return out
+
+
 def _ps() -> List[List[str]]:
     try:
         txt = subprocess.run(["ps", "-axo", "pid=,ppid=,args="], stdout=subprocess.PIPE,
@@ -336,10 +352,13 @@ def identify_self() -> List[str]:
     rows = {int(p): (int(pp), a) for p, pp, a in _ps() if p.isdigit() and pp.isdigit()}
     claude = claude_running()
     ids: List[str] = []
+    env_sid = os.environ.get("CLAUDE_CODE_SESSION_ID") or ""
+    if UUID_RE.fullmatch(env_sid):
+        ids.append(env_sid)
     ancestors: List[int] = []
     pid = os.getppid()
     for _ in range(8):
-        if pid in claude:
+        if pid in claude and claude[pid] not in ids:
             ids.append(claude[pid])
         if pid in rows:
             ppid, args = rows[pid]
