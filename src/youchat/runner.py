@@ -373,22 +373,12 @@ class Runner:
         started = time.time()
         deadline = started + max(60.0, float(job.get("lease_seconds", 10800)) - 60.0)
         if rec.get("status") == "busy" or not is_session_idle("claude", sid):
-            log("wake %s: %s session %s is busy in live Claude window; waiting for turn end"
+            # Don't hold a runner slot while the window works (a long turn would starve every other
+            # agent's wakes). Report busy; the hub retries after its busy back-off.
+            log("wake %s: %s session %s is busy in live Claude window; retrying later"
                 % (job["wake_id"], agent, sid[:8]))
-            while time.time() < deadline:
-                time.sleep(1.5)
-                cur = claude_live_records().get(sid)
-                if not cur:
-                    return False
-                if cur.get("status") != "busy" and is_session_idle("claude", sid):
-                    break
-            try:
-                if not HubClient().call("watch", {"agent": agent, "after_seq": 0, "timeout": 0}, timeout=5):
-                    log("wake %s: %s already read its inbox during previous turn" % (job["wake_id"], agent))
-                    self._done(job, 0, None, "already-read")
-                    return True
-            except Exception:
-                pass
+            self._done(job, None, None, "busy")
+            return True
         try:
             sp = os.path.expanduser("~/.claude/settings.json")
             if os.path.isfile(sp):
