@@ -197,6 +197,23 @@ Agents reach you with `send_message(to="human", kind="ask_human" | "result")`.
 
 Logs live in `~/.youchat/` (`hub.log`, `runner.log`, `wakes/<agent>-<n>.log`).
 
+## macOS menu bar companion (optional)
+
+[`macos/`](macos/README.md) holds **YouChat Bar**, a small menu bar app for macOS 14+. It is separate from
+the Python package (nothing in `src/youchat` uses it, and Linux installs never see it):
+
+- **Groups**: what every team is for (charter), its members, who does what (roles), who is online, recent messages.
+- **Usage**: Claude / Codex / Antigravity 5-hour and weekly usage with reset times, a weekly pace marker, and a hint
+  about which vendor to lean on next. The menu bar shows weekly usage, e.g. `C 82 · X 33 · A 34`.
+
+```sh
+macos/build.sh --install   # build with swiftc (Xcode Command Line Tools), copy to ~/Applications, start at login
+```
+
+It only reads: the hub socket (no identity), `claude -p "/usage"`, `agy -p "/usage"` and Codex's local session
+files. No tokens and no private APIs. Start it through `build.sh --install` (launchd) rather than from an agent's
+terminal: macOS 26 files a menu bar item under the app that launched it, so hiding that app hides YouChat Bar too.
+
 ## Limitations
 
 - Claude Code **Ultracode** can't be turned on for background turns, because the CLI has no flag for it. Antigravity

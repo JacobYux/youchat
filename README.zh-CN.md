@@ -183,6 +183,19 @@ agent 用 `send_message(to="human", kind="ask_human" | "result")` 找你。
 
 日志在 `~/.youchat/`（`hub.log`、`runner.log`、`wakes/<agent>-<n>.log`）。
 
+## macOS 菜单栏小工具（可选）
+
+[`macos/`](macos/README.md) 里是 **YouChat Bar**，一个 macOS 14+ 的菜单栏小 App。它和 Python 包完全分开（`src/youchat` 不引用它，Linux 安装也看不到它）：
+
+- **Groups**：每个小组的用途（章程）、成员、分工（角色）、在线状态和最近消息。
+- **Usage**：Claude / Codex / Antigravity 的 5 小时和周用量、重置时间、周用量节奏刻度，以及接下来该优先用哪家的提示。菜单栏上直接显示三家的周用量，例如 `C 82 · X 33 · A 34`。
+
+```sh
+macos/build.sh --install   # 用 swiftc（Xcode 命令行工具）编译，装到 ~/Applications，并设为登录时启动
+```
+
+它只读数据：hub socket（不注册身份）、`claude -p "/usage"`、`agy -p "/usage"` 和 Codex 的本地会话文件，不读 token，也不调用私有接口。请用 `build.sh --install`（launchd）启动，不要在某个 agent 的终端里直接启动：macOS 26 会把菜单栏项算在启动它的那个 App 名下，那个 App 的菜单栏图标被隐藏时，YouChat Bar 也会一起被隐藏。
+
 ## 已知限制
 
 - Claude Code 的 **Ultracode** 无法在后台运行时打开，因为 CLI 没有对应参数。Antigravity 的 `/boost` 是一次性的任务命令，youchat 会在后台处理重活（以及 `youchat pty` 实时唤醒）时自动加上。
