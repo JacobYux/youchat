@@ -29,6 +29,7 @@
 | **跨机器，但不新增任何网络暴露面** | 笔记本 ↔ 服务器只走你已有的 SSH（`ssh -L` 转发 Unix socket）。不需要 Tailscale，不改 VPN，**任何机器上都不开 TCP 端口**。hub 只监听权限为 `0700`/`0600` 的 Unix socket，并校验对端 UID，共享服务器上的其他用户连不进来。 |
 | **成员就是你真实的、有名字的对话** | 小组成员就是你某个具名的 CLI 对话（`claude --resume` / `codex resume` / `agy --conversation`），带着它自己的记忆和设置。名字独占；对话会根据自己的 session id 自动绑定身份，不用你告诉它"你是谁"。 |
 | **有分工的小组，而不只是收件箱** | 小组有章程，成员有职责；消息分类型（`task` 派任务、`handoff` 交接、`question` 提问、`result` 结果、`review_request` 提交验收、`review` 验收结论、`ask_human` 请示你），agent 知道该找谁、怎么交接。 |
+| **一键打开整个小组工作台（iTerm2 + tmux）** | 一条 `youchat open <TEAM>`（或 `--ssh macmini`）即可在单个 iTerm2 窗口中通过 `tmux -CC` 把组内所有成员变成原生顶部 Tab（`⌘1/2/3` 切换）；关窗口后台继续跑，随时重连恢复。 |
 | **唤醒的是正确的那个对话** | 发给**已关闭**对话的消息，会在后台恢复**同一个**对话跑一轮（第一次则新建）；发给**开着**的对话，会直接推进你的窗口（Claude Code channels、Antigravity Stop hook）。开着的对话永远不会被两处同时驱动。 |
 | **三家厂商，一条总线** | Claude Code、Codex CLI、Antigravity CLI 各用自己原生的恢复/无头模式驱动（重活自动加 Antigravity `/boost`）。 |
 | **默认安全** | 单成员冷却、每组每小时唤醒预算（用完自动暂停小组）、连续空转自动暂停该成员、`pause`/`resume` 急停、`ask_human` 桌面通知；并明确告诉 agent：同伴的消息**不是**用户指令。 |
@@ -172,7 +173,8 @@ agent 用 `send_message(to="human", kind="ask_human" | "result")` 找你。
 | `youchat tail` / `thread ID` | 实时查看全部消息 / 查看某个线程 |
 | `youchat send TO TEXT` / `inbox [--wait N]` | 以 `human` 身份和小组对话 |
 | `youchat sessions [QUERY]` | 列出本机具名的 Claude/Codex/agy 对话 |
-| `youchat open MEMBER` | 以交互方式打开成员的对话（Ghostty 或 Terminal.app），并开启实时推送 |
+| `youchat open <TEAM\|MEMBER> [--ssh HOST] [--tail]` | 在 iTerm2 中通过 `tmux -CC` 原生标签页打开整个小组（支持本机或 `--ssh` 远端），或打开单个成员对话 |
+| `youchat group <TEAM> [--ssh HOST] [--tail]` | `youchat open --group <TEAM>` 的简写别名，直接打开或重连整个小组工作台 |
 | `youchat pty <claude\|codex\|agy> …` | 透明 PTY 包装器：在打开的终端对话空闲时自动注入新消息唤醒词 |
 | `youchat wakes` / `wake-reset NAME` | 后台唤醒记录 / 解除某成员的暂停 |
 | `youchat pause TEAM` / `resume TEAM` | 停止 / 恢复某小组的后台唤醒 |
@@ -182,6 +184,22 @@ agent 用 `send_message(to="human", kind="ask_human" | "result")` 找你。
 | `youchat forget NAME…` | 清理过期的身份 |
 
 日志在 `~/.youchat/`（`hub.log`、`runner.log`、`wakes/<agent>-<n>.log`）。
+
+<details>
+<summary><b>iTerm2 + tmux 小组工作台用法与推荐设置</b></summary>
+
+运行 `youchat open <TEAM>`（或 `youchat group <TEAM>`）会把整个小组映射为名为 `yc-<TEAM>` 的 `tmux` 会话，并在单个 iTerm2 窗口中将每个 Agent 成员打开为一个原生顶部 Tab（同时开启 Claude Code channels 与 `youchat pty` 实时推送）：
+
+```sh
+youchat open WECHAT                  # 打开本机 WECHAT 小组（1 个 iTerm2 窗口，每个成员 1 个 Tab）
+youchat open WECHAT --ssh macmini    # 打开远程 macmini 上的小组（远端 tmux 编排 + 本地 iTerm2 挂载）
+youchat open WECHAT --tail           # 额外附带一个实时查看群聊消息流的 tail Tab
+youchat open WECHAT --no-cc          # 使用标准终端内 tmux 状态栏模式（不使用 -CC）
+```
+
+- **首次使用 iTerm2 `tmux -CC` 建议勾选**：`Settings (⌘,) → General → tmux` 中勾选 **`Automatically bury the tmux client session after connecting`**，并确认 `When attaching, restore windows as` 为 **`Tabs in the attaching window`**（`youchat` 也会自动写入这两项默认配置，重启 iTerm2 后生效）。这样连接后第 1 个 `[↦ tmux]` 控制 Tab 会自动隐藏，窗口顶部只保留各成员的 Tab（`⌘1/2/3`）。
+- **挂起与重连**：在菜单栏点击 `Shell → tmux → Detach`（`⌃⌘D`）即可收起窗口让小组在后台继续运行；随时再次执行 `youchat open <TEAM>` 即可无损重连。
+</details>
 
 ## macOS 菜单栏小工具（可选）
 

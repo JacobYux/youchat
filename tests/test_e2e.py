@@ -292,6 +292,97 @@ class E2E(unittest.TestCase):
         self.assertEqual(len(msgs), 1)
         self.assertEqual(msgs[0]["body"], "after db reset")
 
+    def _cli(self, *args):
+        return subprocess.run([sys.executable, "-m", "youchat"] + list(args), env=self.env,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15)
+
+    def test_open_group_cli_and_ssh(self):
+        lead = self.agent("G-LEAD")
+        lead.close()
+        c = self.agent("G-SETUP")
+        c.call("team_create", {"name": "GRP", "charter": "group test"})
+        c.call("team_add", {"team": "GRP", "agent": "G-CLD", "cli": "claude", "host": "testhost",
+                            "session_id": "11111111-1111-1111-1111-111111111111", "cwd": "~/proj dir",
+                            "model": "opus", "effort": "high", "options": {"permission_mode": "bypass"}})
+        c.call("team_add", {"team": "GRP", "agent": "G-CDX", "cli": "codex", "host": "macmini",
+                            "session_id": "22222222-2222-2222-2222-222222222222", "cwd": "/tmp",
+                            "model": "gpt-5.4", "options": {"ultra": True, "permission_mode": "auto"}})
+        c.call("team_add", {"team": "GRP", "agent": "G-AGY", "cli": "antigravity", "host": "testhost",
+                            "session_id": "33333333-3333-3333-3333-333333333333",
+                            "options": {"permission_mode": "accept-edits"}})
+        j = json.loads(self._cli("teams", "GRP", "--json").stdout.decode())
+        self.assertEqual(j[0]["name"], "GRP")
+        self.assertEqual(len(j[0]["members"]), 3)
+        out = self._cli("open", "GRP", "--print", "--terminal", "iterm").stdout.decode()
+        self.assertIn("_yc_ensure_win yc-GRP G-CLD", out)
+        self.assertIn("_yc_ensure_win yc-GRP G-CDX", out)
+        self.assertIn("_yc_ensure_win yc-GRP G-AGY", out)
+        self.assertIn("ssh -t macmini", out)  # hybrid: G-CDX is on macmini while GRP opens locally
+        self.assertNotIn("_yc_ensure_win yc-GRP tail", out)
+        self.assertTrue(out.strip().endswith("tmux -CC attach -d -t yc-GRP"))
+        out_tail = self._cli("group", "GRP", "--tail", "--no-cc", "--print").stdout.decode()
+        self.assertIn("_yc_ensure_win yc-GRP tail", out_tail)
+        self.assertTrue(out_tail.strip().endswith("tmux attach -t yc-GRP"))
+        out_ssh = self._cli("open", "GRP", "--ssh", "macmini", "--print", "--terminal", "iterm").stdout.decode()
+        self.assertTrue(out_ssh.startswith("ssh -t macmini "))
+        self.assertIn("tmux -CC attach -d -t yc-GRP", out_ssh)
+        # single-member open (local and remote-host member)
+        m_local = self._cli("open", "G-CLD", "--print").stdout.decode().strip()
+        self.assertIn("cd ~/'proj dir' && YOUCHAT_NAME=G-CLD claude --dangerously-skip-permissions", m_local)
+        m_rem = self._cli("open", "G-CDX", "--print").stdout.decode().strip()
+        self.assertTrue(m_rem.startswith("ssh -t macmini "))
+        # team where all members live on macmini auto-opens on macmini via ssh
+        c.call("team_create", {"name": "RGRP", "charter": "remote only"})
+        c.call("team_add", {"team": "RGRP", "agent": "R-1", "cli": "claude", "host": "macmini"})
+        self.assertTrue(self._cli("open", "RGRP", "--print").stdout.decode().startswith("ssh -t macmini "))
+        # error cases: empty team, missing target
+        c.call("team_create", {"name": "EMPTY", "charter": "none"})
+        self.assertNotEqual(self._cli("open", "EMPTY", "--print").returncode, 0)
+        self.assertNotEqual(self._cli("open").returncode, 0)
+
+    def test_tmux_setup_execution(self):
+        if not shutil.which("tmux"):
+            self.skipTest("tmux not installed")
+        from youchat.cli import tmux_setup_script
+        fake_bin = os.path.join(self.tmp, "fake_bin")
+        os.makedirs(fake_bin, exist_ok=True)
+        for name in ("claude", "youchat"):
+            p = os.path.join(fake_bin, name)
+            with open(p, "w") as f:
+                f.write("#!/bin/sh\nsleep 30\n")
+            os.chmod(p, 0o755)
+        tsock = "yct_" + str(os.getpid())
+        twrap = os.path.join(fake_bin, "tmux")
+        real_tmux = shutil.which("tmux")
+        with open(twrap, "w") as f:
+            f.write('#!/bin/sh\nexec "%s" -L "%s" "$@"\n' % (real_tmux, tsock))
+        os.chmod(twrap, 0o755)
+        team = {"name": "T.1", "members": [
+            {"agent": "A1", "cli": "claude", "session_id": "11111111-2222-3333-4444-555555555555", "cwd": self.tmp},
+            {"agent": "A2", "cli": "codex", "session_id": "22222222-2222-3333-4444-555555555555", "cwd": self.tmp},
+        ]}
+        env = dict(self.env, PATH=fake_bin + ":" + os.environ.get("PATH", ""))
+        script1 = tmux_setup_script(team, tail=True, already_open={"A2"}).replace(
+            'export PATH="', 'export PATH="' + fake_bin + ":")
+        try:
+            subprocess.run(["/bin/sh", "-c", script1], check=True, env=env, timeout=15)
+            wins = subprocess.run([real_tmux, "-L", tsock, "list-windows", "-t", "=yc-T-1",
+                                   "-F", "#{window_name}|#{pane_pid}"],
+                                  stdout=subprocess.PIPE, check=True).stdout.decode().splitlines()
+            wmap = dict(w.split("|", 1) for w in wins)
+            self.assertEqual(list(wmap.keys()), ["A1", "A2", "tail"])
+            time.sleep(0.4)
+            # re-run with A2 now free: A1 is busy so its pane_pid stays identical; A2 was idle after skip_cmd so it respawns
+            script2 = tmux_setup_script(team, tail=True, already_open=set()).replace(
+                'export PATH="', 'export PATH="' + fake_bin + ":")
+            subprocess.run(["/bin/sh", "-c", script2], check=True, env=env, timeout=15)
+            wins2 = dict(w.split("|", 1) for w in subprocess.run(
+                [real_tmux, "-L", tsock, "list-windows", "-t", "=yc-T-1", "-F", "#{window_name}|#{pane_pid}"],
+                stdout=subprocess.PIPE, check=True).stdout.decode().splitlines())
+            self.assertEqual(wins2["A1"], wmap["A1"])
+        finally:
+            subprocess.run([real_tmux, "-L", tsock, "kill-server"], stderr=subprocess.DEVNULL)
+
 
 if __name__ == "__main__":
     unittest.main()

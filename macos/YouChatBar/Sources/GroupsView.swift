@@ -76,6 +76,7 @@ struct TeamCard: View {
 
     private func header(_ active: Bool) -> some View {
         let online = team.members.filter { $0.online }.count
+        let hasAgents = team.members.contains { $0.cli != "human" }
         return HStack(alignment: .firstTextBaseline, spacing: 6) {
             Text(team.name).font(.headline)
             Pill(text: team.status, color: active ? .green : Color.secondary)
@@ -85,6 +86,10 @@ struct TeamCard: View {
                 .foregroundStyle(online > 0 ? Color.secondary : Color.secondary.opacity(0.6))
             if let t = model.lastActive(team) {
                 Text("· \(Fmt.relative(t))").font(.caption).foregroundStyle(.tertiary)
+            }
+            if hasAgents {
+                Button { model.openGroup(team) } label: { Image(systemName: "macwindow.badge.plus") }
+                    .buttonStyle(.borderless).help("在 iTerm2 + tmux 中打开整个小组（youchat open \(team.name)）")
             }
         }
     }

@@ -4,7 +4,7 @@ A menu bar companion for youchat (no Dock icon): the button shows weekly usage, 
 `C 82 · X 33 · A 34`, and opens a panel. It lives in `macos/` and is **not** part of the Python
 package: nothing in `src/youchat` imports it, and Linux/server installs never see it.
 
-- **Groups**: every team's purpose (charter), members, roles, online state, recent messages.
+- **Groups**: every team's purpose (charter), members, roles, online state, recent messages, and one-click buttons to open a whole team workspace in iTerm2 + `tmux` (`youchat open <TEAM>`) or an individual member session.
 - **Usage**: Claude / Codex / Antigravity 5-hour and weekly usage, with reset times.
 
 ## Build / install

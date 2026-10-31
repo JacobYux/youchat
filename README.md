@@ -33,6 +33,7 @@ set of problems:
 | **Cross-machine without new network exposure** | Laptop ↔ server over the SSH you already use (`ssh -L` of a Unix socket). No Tailscale, no VPN changes, **no TCP port is opened anywhere**. The hub only listens on a `0700`/`0600` Unix socket and checks the peer UID, so other users on a shared server can't connect. |
 | **Your real sessions, by name** | A teammate *is* one of your named CLI sessions (`claude --resume`, `codex resume`, `agy --conversation`), with its own memory and settings. Names are exclusive, and a session binds to its name on its own (from its session id), so you never have to tell it who it is. |
 | **Teams with roles, not just inboxes** | Teams have a charter and members with responsibilities. Messages are typed (`task`, `handoff`, `question`, `result`, `review_request`, `review`, `ask_human`), so agents know who to ask and how to hand over. |
+| **One-command group workspace (`iTerm2` + `tmux`)** | `youchat open <TEAM>` (or `--ssh macmini`) opens an entire team in a single iTerm2 window with one native `tmux -CC` tab per agent (`⌘1/2/3`); detach anytime and re-attach without losing state. |
 | **Wakes the right session** | A message to a **closed** session resumes *that same session* in the background for one turn (or creates it the first time). A message to an **open** session is pushed straight into your window (Claude Code channels, Antigravity Stop hook). An open session is never driven twice in parallel. |
 | **Three vendors, one bus** | Claude Code, Codex CLI and Antigravity CLI, each driven with its own native resume and headless modes (and Antigravity `/boost` for heavy work). |
 | **Safe by default** | Per-agent cooldown, hourly wake budget per team (the team auto-pauses when it runs out), auto-suspension of agents that make no progress, `pause`/`resume`, and `ask_human` desktop notifications. Peer messages are explicitly *not* user instructions. |
@@ -186,7 +187,8 @@ Agents reach you with `send_message(to="human", kind="ask_human" | "result")`.
 | `youchat tail` / `thread ID` | Follow all messages / show one thread |
 | `youchat send TO TEXT` / `inbox [--wait N]` | Talk to the team as `human` |
 | `youchat sessions [QUERY]` | Named Claude/Codex/agy sessions on this machine |
-| `youchat open MEMBER` | Open a member's session interactively (Ghostty, or Terminal.app) with live push on |
+| `youchat open <TEAM\|MEMBER> [--ssh HOST] [--tail]` | Open a whole team group in iTerm2 (`tmux -CC` native tabs, local or over SSH) or a single member session |
+| `youchat group <TEAM> [--ssh HOST] [--tail]` | Shorthand alias for `youchat open --group <TEAM>` |
 | `youchat pty <claude\|codex\|agy> …` | Transparent PTY wrapper that auto-injects wake prompts into idle terminal sessions |
 | `youchat wakes` / `wake-reset NAME` | Background wake log / un-suspend an agent |
 | `youchat pause TEAM` / `resume TEAM` | Stop / restart background wakes of a team |
@@ -196,6 +198,22 @@ Agents reach you with `send_message(to="human", kind="ask_human" | "result")`.
 | `youchat forget NAME…` | Remove stale identities |
 
 Logs live in `~/.youchat/` (`hub.log`, `runner.log`, `wakes/<agent>-<n>.log`).
+
+<details>
+<summary><b>Group workspace in iTerm2 + tmux (local &amp; remote SSH)</b></summary>
+
+`youchat open <TEAM>` (or `youchat group <TEAM>`) orchestrates a `tmux` session named `yc-<TEAM>` (with live push enabled for every member) and attaches it in a single iTerm2 window with one native tab per agent:
+
+```sh
+youchat open WECHAT                  # open local team WECHAT (one iTerm2 window, one native tab per agent)
+youchat open WECHAT --ssh macmini    # open a team on remote host macmini over SSH + tmux -CC
+youchat open WECHAT --tail           # also include a live `youchat tail <TEAM>` tab
+youchat open WECHAT --no-cc          # use standard in-terminal tmux status bar instead of -CC
+```
+
+- **Recommended iTerm2 setting for `tmux -CC`**: in `Settings (⌘,) → General → tmux`, check **`Automatically bury the tmux client session after connecting`** and set `When attaching, restore windows as` to **`Tabs in the attaching window`** (`youchat` also writes these defaults automatically; restart iTerm2 once if it was already running). This hides the `[↦ tmux]` control tab so only your agent tabs (`⌘1/2/3`) appear.
+- **Detach & re-attach**: use `Shell → tmux → Detach` (`⌃⌘D`) to close the window while keeping all agents running in `tmux`; run `youchat open <TEAM>` anytime to re-attach.
+</details>
 
 ## macOS menu bar companion (optional)
 

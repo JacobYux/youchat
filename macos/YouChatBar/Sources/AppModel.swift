@@ -133,4 +133,15 @@ final class AppModel: ObservableObject {
             await MainActor.run { self.actionMessage = msg.isEmpty ? "opened \(m.agent)" : msg }
         }
     }
+
+    func openGroup(_ team: Team) {
+        guard let exe = UsageProviders.which("youchat") else {
+            actionMessage = "youchat not found in PATH"; return
+        }
+        Task.detached {
+            let out = (try? UsageProviders.run(exe, ["open", "--group", team.name], timeout: 30)) ?? ""
+            let msg = out.trimmingCharacters(in: .whitespacesAndNewlines)
+            await MainActor.run { self.actionMessage = msg.isEmpty ? "opened group \(team.name)" : msg }
+        }
+    }
 }

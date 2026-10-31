@@ -304,6 +304,7 @@ class McpServer:
                     except HubError:
                         pass
             if self.hub.name:
+                self._sync_session_id()
                 try:
                     self.hub.call("ping", timeout=10)
                 except HubError:
@@ -321,6 +322,17 @@ class McpServer:
             return ids[0] if ids else None
         except Exception:
             return None
+
+    def _sync_session_id(self) -> None:
+        if not self.hub.name or (self.hub.hello_args or {}).get("session_id"):
+            return
+        sid = self.self_session_id()
+        if sid:
+            try:
+                self.hub.register(kind=self.kind(), name=self.hub.name, force=True,
+                                  description=os.environ.get("YOUCHAT_DESC") or None, session_id=sid)
+            except HubError:
+                pass
 
     def auto_name(self) -> Optional[str]:
         """YOUCHAT_NAME, else the team member whose session id is one of our parent processes'
@@ -348,6 +360,7 @@ class McpServer:
                 self.hub.register(kind=self.kind(), name=auto, force=True,
                                   description=os.environ.get("YOUCHAT_DESC") or None,
                                   session_id=self.self_session_id())
+        self._sync_session_id()
         return self.hub.name or ""
 
     def _briefing(self, teams: List[Dict[str, Any]]) -> str:

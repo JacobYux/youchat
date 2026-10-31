@@ -356,6 +356,7 @@ def identify_self() -> List[str]:
     if UUID_RE.fullmatch(env_sid):
         ids.append(env_sid)
     ancestors: List[int] = []
+    codex_anc = False
     pid = os.getppid()
     for _ in range(8):
         if pid in claude and claude[pid] not in ids:
@@ -363,8 +364,11 @@ def identify_self() -> List[str]:
         if pid in rows:
             ppid, args = rows[pid]
             ids += [u for u in SESSION_ARG_RE.findall(args) if u not in ids]
-            if _classify_agent_proc(args) in ("claude", "codex", "agy"):
+            kind = _classify_agent_proc(args)
+            if kind in ("claude", "codex", "agy"):
                 ancestors.append(pid)
+                if kind == "codex":
+                    codex_anc = True
             pid = ppid
         else:
             break
@@ -373,5 +377,9 @@ def identify_self() -> List[str]:
     for u in lsof_session_ids(ancestors):
         if u not in ids:
             ids.append(u)
+    if codex_anc and not ids:
+        for u in codex_recent_thread_ids(limit=1):
+            if u not in ids:
+                ids.append(u)
     return ids
 

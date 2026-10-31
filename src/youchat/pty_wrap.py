@@ -252,6 +252,8 @@ def _resolve_identity(hub: HubClient, pid: int, cli_kind: str, args: List[str],
                     if m.get("agent") == agent:
                         if not sid and m.get("session_id"):
                             sid = m["session_id"]
+                        elif sid and not m.get("session_id"):
+                            hub.call("bind_session", {"agent": agent, "session_id": sid}, timeout=5)
                         opts = m.get("options") or {}
                         if opts.get("boost"):
                             boost = True

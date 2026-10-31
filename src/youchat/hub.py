@@ -300,8 +300,7 @@ class Hub:
         if kind in WAKEABLE_CLIS:
             self.db.execute("UPDATE members SET cli=? WHERE agent=? AND cli=''", (kind, name))
         if session_id:
-            self.session_owner[session_id] = name
-            self.db.execute("UPDATE members SET session_id=? WHERE agent=? AND session_id=''", (session_id, name))
+            self._bind_session(name, session_id)
         conn.kind = kind
         if kind == "runner":  # a (re)started runner: jobs leased by its previous incarnation are gone
             for a, lease in list(self.leases.items()):
@@ -522,6 +521,23 @@ class Hub:
                 return {"agent": self.session_owner[sid], "team": "", "session_id": sid}
         return {"agent": None}
 
+    def _bind_session(self, agent: str, session_id: str) -> bool:
+        if not agent or not session_id:
+            return False
+        self.session_owner[session_id] = agent
+        bound = False
+        for r in self.db.execute("SELECT team, options FROM members WHERE agent=? AND session_id=''",
+                                 (agent,)).fetchall():
+            opts = json.loads(r["options"] or "{}")
+            opts.pop("create", None)
+            self.db.execute("UPDATE members SET session_id=?, options=? WHERE team=? AND agent=?",
+                            (session_id, json.dumps(opts, ensure_ascii=False), r["team"], agent))
+            bound = True
+        return bound
+
+    def op_bind_session(self, conn: Conn, agent: str, session_id: str) -> Dict[str, Any]:
+        return {"bound": self._bind_session(agent, session_id)}
+
     def _team_wakes_last_hour(self, team: str) -> int:
         return int(self.db.execute("SELECT COUNT(*) FROM wakes WHERE team=? AND started_at>? AND note!='busy'",
                                    (team, time.time() - 3600)).fetchone()[0])
@@ -657,12 +673,7 @@ class Hub:
         self.db.execute("UPDATE wakes SET finished_at=?, exit_code=?, note=? WHERE id=?",
                         (now, exit_code, (note or "")[:500], wake_id))
         if session_id:  # a newly created session reports its id: remember it for future resumes
-            for r in self.db.execute("SELECT team, options FROM members WHERE agent=? AND session_id=''",
-                                     (agent,)).fetchall():
-                opts = json.loads(r["options"] or "{}")
-                opts.pop("create", None)
-                self.db.execute("UPDATE members SET session_id=?, options=? WHERE team=? AND agent=?",
-                                (session_id, json.dumps(opts, ensure_ascii=False), r["team"], agent))
+            self._bind_session(agent, session_id)
             log("wake %s: %s now bound to session %s" % (wake_id, agent, session_id))
         if note != "busy":  # 'busy' = the session is open elsewhere; not the agent's fault
             before = lease["unread"] if lease else 0

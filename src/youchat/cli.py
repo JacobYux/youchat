@@ -4,11 +4,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
 import time
-from typing import List, Optional
+from typing import List, Optional, Set
 
 from youchat import VERSION
 from youchat.common import HubClient, HubError, ensure_private_dir, home_dir, short_host, sock_path
@@ -77,6 +78,9 @@ def cmd_teams(a: argparse.Namespace) -> None:
     from youchat.mcp_server import fmt_team
     c = HubClient()
     teams = [c.call("team_get", {"name": a.name})] if a.name else c.call("teams")
+    if getattr(a, "json", False):
+        print(json.dumps(teams, ensure_ascii=False))
+        return
     print("\n\n".join(fmt_team(t) for t in teams) if teams else "(no teams yet)")
 
 
@@ -190,57 +194,343 @@ def cmd_hook(a: argparse.Namespace) -> None:
         print("installed Antigravity Stop hook 'youchat-inbox' in %s (applies to newly started sessions)" % path)
 
 
+def _quote_cwd(cwd: str) -> str:
+    if not cwd or cwd == "~":
+        return "~"
+    if cwd.startswith("~/"):
+        return "~/" + shlex.quote(cwd[2:])
+    return shlex.quote(cwd)
+
+
 def interactive_command(m: dict) -> str:
     """Shell command that opens member m's own session interactively (channel push on for Claude)."""
+    from youchat.runner import BYPASS
     o = m.get("options") or {}
-    bypass = str(o.get("permission_mode") or "").lower() in ("bypass", "bypasspermissions",
-                                                            "dangerously-skip-permissions", "yolo")
-    sid, cli = m["session_id"], m["cli"]
+    perm = str(o.get("permission_mode") or "").lower()
+    bypass = perm in BYPASS
+    sid, cli = m.get("session_id") or "", m.get("cli") or ""
+    model, effort = m.get("model") or "", m.get("effort") or ""
     if cli == "claude":
-        argv = ["claude"] + (["--dangerously-skip-permissions"] if bypass else []) + \
-               ["--dangerously-load-development-channels", "server:youchat"] + (["--resume", sid] if sid else
-                                                                               ["-n", m["agent"]])
+        argv = ["claude"]
+        if bypass:
+            argv += ["--dangerously-skip-permissions"]
+        elif perm:
+            argv += ["--permission-mode", perm]
+        if model:
+            argv += ["--model", model]
+        if effort:
+            argv += ["--effort", effort]
+        argv += ["--dangerously-load-development-channels", "server:youchat"]
+        argv += ["--resume", sid] if sid else ["-n", m["agent"]]
     elif cli == "antigravity":
-        argv = ["youchat", "pty", "agy"] + (["--conversation", sid] if sid else []) + \
-               (["--dangerously-skip-permissions"] if bypass else [])
+        argv = ["youchat", "pty", "agy"] + (["--conversation", sid] if sid else [])
+        if model:
+            argv += ["--model", model]
+        if effort:
+            argv += ["--effort", effort]
+        if bypass:
+            argv += ["--dangerously-skip-permissions"]
+        elif perm in ("accept-edits", "acceptedits", "auto", "plan"):
+            argv += ["--mode", "accept-edits" if perm == "acceptedits" else perm]
     elif cli == "codex":
-        eff = "ultra" if o.get("ultra") else (m.get("effort") or "")
+        eff = "ultra" if o.get("ultra") else effort
         argv = ["youchat", "pty", "codex"] + (["resume", sid] if sid else []) + \
-               (["-m", m["model"]] if m.get("model") else []) + \
-               (["-c", 'model_reasoning_effort="%s"' % eff] if eff else []) + \
-               (["--dangerously-bypass-approvals-and-sandbox"] if bypass else [])
+               (["-m", model] if model else []) + \
+               (["-c", 'model_reasoning_effort="%s"' % eff] if eff else [])
+        if bypass:
+            argv += ["--dangerously-bypass-approvals-and-sandbox"]
+        elif perm in ("full-auto", "auto"):
+            argv += ["--approve-for-me"]
     else:
         raise SystemExit("cannot open a %r member" % cli)
     cwd = m.get("cwd") or "~"
-    return "cd %s && YOUCHAT_NAME=%s %s" % (shlex.quote(cwd), shlex.quote(m["agent"]),
+    return "cd %s && YOUCHAT_NAME=%s %s" % (_quote_cwd(cwd), shlex.quote(m["agent"]),
                                            " ".join(shlex.quote(x) for x in argv))
+
+
+STRIP_ENV_KEYS = ("YOUCHAT_IN_PTY", "YOUCHAT_NAME", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID")
+REMOTE_PATH_EXPORT = 'export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"'
+UNSET_ENV_CMD = "unset " + " ".join(STRIP_ENV_KEYS)
+
+_TMUX_PREAMBLE = """\
+%s
+%s
+command -v tmux >/dev/null 2>&1 || { echo "youchat: tmux is required to open a group (brew install tmux)" >&2; exit 1; }
+tmux start-server \\; set-environment -gu YOUCHAT_IN_PTY \\; set-environment -gu YOUCHAT_NAME \\; set-environment -gu CLAUDECODE \\; set-environment -gu CLAUDE_CODE_SESSION_ID 2>/dev/null || true
+_yc_sid_busy() {
+  [ -n "$1" ] || return 1
+  ps -axo args= 2>/dev/null | grep -F -- "$1" | grep -Ev '_yc_ensure_win|grep -F' | grep -Eq '(^|[/ ])(claude|codex|agy)(-bin)?([ ]|$)|/claude/versions/'
+}
+_yc_win_busy() {
+  _s="$1"; _w="$2"
+  _info=$(tmux list-windows -t "=$_s" -F '#{window_name}|#{pane_dead}|#{pane_pid}|#{pane_current_command}|#{@yc_skip}' 2>/dev/null | awk -F'|' -v w="$_w" '$1 == w {print; exit}')
+  [ -n "$_info" ] || return 1
+  _dead=$(printf '%%s' "$_info" | cut -d'|' -f2)
+  _pid=$(printf '%%s' "$_info" | cut -d'|' -f3)
+  _cmd=$(printf '%%s' "$_info" | cut -d'|' -f4)
+  _skip=$(printf '%%s' "$_info" | cut -d'|' -f5)
+  [ "$_dead" = "1" ] || [ "$_skip" = "1" ] && return 1
+  case "$_cmd" in
+    zsh|-zsh|bash|-bash|sh|-sh|fish|-fish)
+      ps -axo ppid=,comm= 2>/dev/null | awk -v p="$_pid" '$1 == p && $2 !~ /gitstatusd/ {found=1} END {exit !found}' && return 0
+      return 1 ;;
+    *) return 0 ;;
+  esac
+}
+""" % (REMOTE_PATH_EXPORT, UNSET_ENV_CMD)
+
+
+_TMUX_ENSURE_WIN = """\
+_yc_ensure_win() {
+  _s="$1"; _w="$2"; _sid="$3"; _ext="$4"; _run_cmd="$5"; _skip_cmd="$6"
+  if _yc_win_busy "$_s" "$_w"; then
+    return 0
+  fi
+  _pcmd="$_run_cmd"; _sk=0
+  if [ "$_ext" = "1" ] || _yc_sid_busy "$_sid"; then
+    _pcmd="$_skip_cmd"; _sk=1
+  fi
+  if ! tmux has-session -t "=$_s" 2>/dev/null; then
+    tmux new-session -d -s "$_s" -n "$_w" /bin/sh -c "$_pcmd"
+    tmux set-environment -t "=$_s" -u YOUCHAT_IN_PTY \\; set-environment -t "=$_s" -u YOUCHAT_NAME \\; set-environment -t "=$_s" -u CLAUDECODE \\; set-environment -t "=$_s" -u CLAUDE_CODE_SESSION_ID 2>/dev/null || true
+  elif ! tmux list-windows -t "=$_s" -F '#{window_name}' 2>/dev/null | grep -Fx -- "$_w" >/dev/null 2>&1; then
+    tmux new-window -d -t "=$_s:" -n "$_w" /bin/sh -c "$_pcmd"
+  else
+    tmux respawn-pane -k -t "=$_s:=$_w" /bin/sh -c "$_pcmd"
+  fi
+  if [ "$_sk" = "1" ]; then
+    tmux set-option -w -t "=$_s:=$_w" @yc_skip 1 2>/dev/null || true
+  else
+    tmux set-option -w -t "=$_s:=$_w" -u @yc_skip 2>/dev/null || true
+  fi
+  tmux set-option -w -t "=$_s:=$_w" automatic-rename off \\; set-option -w -t "=$_s:=$_w" allow-rename off \\; select-pane -t "=$_s:=$_w" -T "$_w" 2>/dev/null || true
+}
+"""
+
+
+def _clean_env() -> dict:
+    env = dict(os.environ)
+    for k in STRIP_ENV_KEYS:
+        env.pop(k, None)
+    return env
+
+
+def tmux_session_name(team_name: str) -> str:
+    return "yc-" + re.sub(r"[^A-Za-z0-9_-]", "-", team_name)
+
+
+def tmux_setup_script(team: dict, *, tail: bool = False, ssh_host: Optional[str] = None,
+                      already_open: Optional[Set[str]] = None) -> str:
+    members = [m for m in (team.get("members") or []) if m.get("cli") in ("claude", "codex", "antigravity")]
+    if not members and not tail:
+        raise SystemExit("team %r has no agent members to open" % team["name"])
+    sess = tmux_session_name(team["name"])
+    tmux_host = (ssh_host or short_host()).lower()
+    lines = [_TMUX_PREAMBLE.rstrip(), _TMUX_ENSURE_WIN.rstrip()]
+    for m in members:
+        wname = m["agent"]
+        sid = m.get("session_id") or ""
+        mcmd = interactive_command(m)
+        mhost = (m.get("host") or "").strip()
+        if not ssh_host and mhost and mhost.lower() != tmux_host:
+            mcmd = "ssh -t %s %s" % (shlex.quote(mhost), shlex.quote("%s; %s; %s" % (REMOTE_PATH_EXPORT, UNSET_ENV_CMD, mcmd)))
+        ext = "1" if (already_open and wname in already_open) else "0"
+        run_cmd = "%s; unset YOUCHAT_IN_PTY CLAUDECODE CLAUDE_CODE_SESSION_ID; export YOUCHAT_NAME=%s; %s; exec ${SHELL:-/bin/zsh} -l" % (
+            REMOTE_PATH_EXPORT, shlex.quote(wname), mcmd)
+        skip_msg = "[youchat] %s is already open outside tmux; close that window first to run it here.\n" % wname
+        skip_cmd = "%s; unset YOUCHAT_IN_PTY CLAUDECODE CLAUDE_CODE_SESSION_ID; export YOUCHAT_NAME=%s; printf %%s %s; exec ${SHELL:-/bin/zsh} -l" % (
+            REMOTE_PATH_EXPORT, shlex.quote(wname), shlex.quote(skip_msg))
+        lines.append("_yc_ensure_win %s %s %s %s %s %s" % (
+            shlex.quote(sess), shlex.quote(wname), shlex.quote(sid), ext,
+            shlex.quote(run_cmd), shlex.quote(skip_cmd)))
+    if tail:
+        tcmd = "%s; %s; youchat tail %s; exec ${SHELL:-/bin/zsh} -l" % (
+            REMOTE_PATH_EXPORT, UNSET_ENV_CMD, shlex.quote(team["name"]))
+        lines.append("_yc_ensure_win %s tail '' 0 %s %s" % (
+            shlex.quote(sess), shlex.quote(tcmd), shlex.quote(tcmd)))
+    return "\n".join(lines)
+
+
+def group_open_command(team: dict, *, cc: bool = True, tail: bool = False,
+                       ssh_host: Optional[str] = None, already_open: Optional[Set[str]] = None) -> str:
+    setup = tmux_setup_script(team, tail=tail, ssh_host=ssh_host, already_open=already_open)
+    sess = shlex.quote(tmux_session_name(team["name"]))
+    attach = ("tmux -CC attach -d -t %s" if cc else "tmux attach -t %s") % sess
+    script = setup + "\n" + attach
+    return ("ssh -t %s %s" % (shlex.quote(ssh_host), shlex.quote(script))) if ssh_host else script
+
+
+def _ensure_iterm_tmux_tabs() -> None:
+    if sys.platform != "darwin":
+        return
+    try:
+        r = subprocess.run(["defaults", "read", "com.googlecode.iterm2", "OpenTmuxWindowsIn"],
+                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5)
+        if r.returncode != 0 or r.stdout.decode("utf-8", "replace").strip() not in ("1", "2"):
+            subprocess.run(["defaults", "write", "com.googlecode.iterm2", "OpenTmuxWindowsIn", "-int", "2"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+        r2 = subprocess.run(["defaults", "read", "com.googlecode.iterm2", "AutoHideTmuxClientSession"],
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5)
+        if r2.returncode != 0:
+            subprocess.run(["defaults", "write", "com.googlecode.iterm2", "AutoHideTmuxClientSession", "-bool", "true"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def _open_terminal_window(term: str, cmd: str, title: str, keep_shell: bool = False) -> None:
+    env = _clean_env()
+    if term == "iterm":
+        inner = ("%s; exec /bin/zsh -l" % cmd) if keep_shell else cmd
+        zcmd = ("/bin/zsh -lc %s" % shlex.quote(inner)).replace("\\", "\\\\").replace('"', '\\"')
+        script = 'tell application "iTerm"\n  activate\n  create window with default profile command "%s"\nend tell' % zcmd
+        subprocess.run(["osascript", "-e", script], check=True, env=env, stdout=subprocess.DEVNULL)
+    elif term == "ghostty":
+        inner = ("%s; exec /bin/zsh -l" % cmd) if keep_shell else cmd
+        subprocess.run(["open", "-na", "Ghostty", "--args", "--title=%s" % title,
+                        "--command=/bin/zsh -lc %s" % shlex.quote(inner)], check=True, env=env)
+    else:
+        script = 'tell application "Terminal"\n  activate\n  do script "%s"\nend tell' % \
+                 cmd.replace("\\", "\\\\").replace('"', '\\"')
+        subprocess.run(["osascript", "-e", script], check=True, env=env, stdout=subprocess.DEVNULL)
+
+
+def _fetch_remote_teams(ssh_host: str, team_name: Optional[str] = None) -> List[dict]:
+    tcmd = "youchat teams --json" + (" " + shlex.quote(team_name) if team_name else "")
+    r = subprocess.run(["ssh", ssh_host, "%s; %s" % (REMOTE_PATH_EXPORT, tcmd)],
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30, env=_clean_env())
+    if r.returncode != 0:
+        raise HubError(r.stderr.decode("utf-8", "replace").strip() or ("ssh %s failed (%d)" % (ssh_host, r.returncode)))
+    return json.loads(r.stdout.decode("utf-8", "replace"))
+
+
+def _resolve_terminal(raw: Optional[str], group: bool = False) -> str:
+    t = (raw or os.environ.get("YOUCHAT_TERMINAL") or "").lower()
+    if t in ("iterm", "iterm2"):
+        return "iterm"
+    if t in ("ghostty", "terminal"):
+        return t
+    has_iterm = os.path.isdir("/Applications/iTerm.app") or os.path.isdir(os.path.expanduser("~/Applications/iTerm.app"))
+    has_ghostty = os.path.isdir("/Applications/Ghostty.app") or os.path.isdir(os.path.expanduser("~/Applications/Ghostty.app"))
+    if group:
+        return "iterm" if (has_iterm or sys.platform != "darwin") else ("ghostty" if has_ghostty else "terminal")
+    if os.environ.get("TERM_PROGRAM") == "iTerm.app" and has_iterm:
+        return "iterm"
+    return "ghostty" if has_ghostty else ("iterm" if has_iterm else "terminal")
+
+
+def _open_group(team: dict, a: argparse.Namespace) -> None:
+    from youchat.sessions import running_session_ids
+    members = [m for m in (team.get("members") or []) if m.get("cli") in ("claude", "codex", "antigravity")]
+    ssh_host = getattr(a, "ssh", None)
+    if not ssh_host and members:
+        loc = short_host().lower()
+        hosts = {((m.get("host") or "").strip() or loc).lower(): (m.get("host") or "").strip() for m in members}
+        if len(hosts) == 1 and next(iter(hosts)) != loc:
+            ssh_host = next(iter(hosts.values()))
+    running = set() if ssh_host else running_session_ids()
+    already_open = {m["agent"] for m in members
+                    if m.get("online") or (not ssh_host and m.get("session_id") and m["session_id"] in running)}
+    term = _resolve_terminal(getattr(a, "terminal", None), group=True)
+    cc_arg = getattr(a, "cc", None)
+    use_cc = cc_arg if cc_arg is not None else (term == "iterm")
+    tail = bool(getattr(a, "tail", False))
+    full_cmd = group_open_command(team, cc=use_cc, tail=tail, ssh_host=ssh_host, already_open=already_open)
+    if a.print or sys.platform != "darwin":
+        print(full_cmd)
+        return
+    if term == "iterm" and use_cc:
+        _ensure_iterm_tmux_tabs()
+    sess = tmux_session_name(team["name"])
+    if ssh_host:
+        _open_terminal_window(term, full_cmd, sess, keep_shell=False)
+    else:
+        setup = tmux_setup_script(team, tail=tail, ssh_host=None, already_open=already_open)
+        r = subprocess.run(["/bin/sh", "-c", setup], env=_clean_env())
+        if r.returncode != 0:
+            raise SystemExit(r.returncode)
+        attach = "%s; %s %s" % (REMOTE_PATH_EXPORT, "tmux -CC attach -d -t" if use_cc else "tmux attach -t",
+                                shlex.quote(sess))
+        _open_terminal_window(term, attach, sess, keep_shell=False)
+    label = {"iterm": "iTerm2", "ghostty": "Ghostty"}.get(term, "Terminal")
+    print("opened team %s in %s (tmux session %s%s)" % (
+        team["name"], label, sess, " on " + ssh_host if ssh_host else ""))
+
+
+def _match_team(teams: List[dict], name: str) -> Optional[dict]:
+    return next((t for t in teams if t["name"] == name), None) or \
+           next((t for t in teams if t["name"].lower() == name.lower()), None)
+
+
+def _team_sources(ssh_host: Optional[str], team_name: Optional[str] = None, prefer_local: bool = False):
+    local = lambda: HubClient().call("teams")
+    if not ssh_host:
+        return [local]
+    remote = lambda: _fetch_remote_teams(ssh_host, team_name)
+    return [local, remote] if prefer_local else [remote, local]
 
 
 def cmd_open(a: argparse.Namespace) -> None:
     from youchat.sessions import running_session_ids
-    c = HubClient()
-    teams = [c.call("team_get", {"name": a.team})] if a.team else c.call("teams")
-    m = next((x for t in teams for x in t["members"] if x["agent"] == a.member), None)
+    raw = (getattr(a, "member", None) or "").strip()
+    team_opt = (getattr(a, "team", None) or "").strip()
+    force_group = bool(getattr(a, "group", False) or getattr(a, "tail", False) or getattr(a, "cc", None) is not None)
+    if raw.startswith("team:"):
+        raw, force_group = raw[5:], True
+    if not raw and not team_opt:
+        raise SystemExit("specify a team or member name to open")
+    ssh_host = getattr(a, "ssh", None)
+    prefer_local = bool(getattr(a, "print", False))
+    if (not raw and team_opt) or (force_group and not team_opt):
+        tname = team_opt or raw
+        last_err: Optional[Exception] = None
+        for src in _team_sources(ssh_host, tname, prefer_local):
+            try:
+                t_match = _match_team(src(), tname)
+                if t_match is not None:
+                    _open_group(t_match, a)
+                    return
+            except Exception as e:
+                last_err = e
+        if last_err:
+            raise last_err if isinstance(last_err, HubError) else HubError(str(last_err))
+        raise SystemExit("no such team %r" % tname)
+    m = None
+    last_err = None
+    for src in _team_sources(ssh_host, team_opt or None, prefer_local):
+        try:
+            teams = src()
+        except Exception as e:
+            last_err = e
+            continue
+        if not team_opt:
+            t_match = _match_team(teams, raw)
+            if t_match is not None:
+                _open_group(t_match, a)
+                return
+        else:
+            t_match = _match_team(teams, team_opt)
+            teams = [t_match] if t_match else []
+        m = next((x for t in teams for x in t["members"] if x["agent"] == raw), None)
+        if m is not None:
+            break
     if m is None:
-        raise SystemExit("no member %r%s" % (a.member, " in team " + a.team if a.team else ""))
-    if m["online"] or (m["session_id"] and m["session_id"] in running_session_ids()):
-        raise SystemExit("%s is already open (online). Close it first if you want to reopen it." % a.member)
+        if last_err:
+            raise last_err if isinstance(last_err, HubError) else HubError(str(last_err))
+        raise SystemExit("no member %r%s" % (raw, " in team " + team_opt if team_opt else ""))
+    mhost = ssh_host or ((m.get("host") or "").strip() if (m.get("host") or "").strip().lower() != short_host().lower() else "")
+    if m["online"] or (not mhost and m["session_id"] and m["session_id"] in running_session_ids()):
+        raise SystemExit("%s is already open (online). Close it first if you want to reopen it." % raw)
     cmd = interactive_command(m)
+    if mhost:
+        cmd = "ssh -t %s %s" % (shlex.quote(mhost), shlex.quote("%s; %s; %s" % (REMOTE_PATH_EXPORT, UNSET_ENV_CMD, cmd)))
     if a.print or sys.platform != "darwin":
         print(cmd)
         return
-    term = (a.terminal or os.environ.get("YOUCHAT_TERMINAL") or
-            ("ghostty" if os.path.isdir("/Applications/Ghostty.app") else "terminal")).lower()
-    if term == "ghostty":
-        # login shell (PATH incl. ~/.local/bin); drop into a shell afterwards so the window stays usable
-        inner = "%s; exec /bin/zsh -l" % cmd
-        subprocess.run(["open", "-na", "Ghostty", "--args", "--title=%s" % a.member,
-                        "--command=/bin/zsh -lc %s" % shlex.quote(inner)], check=True)
-    else:
-        script = 'tell application "Terminal"\n  activate\n  do script "%s"\nend tell' % \
-                 cmd.replace("\\", "\\\\").replace('"', '\\"')
-        subprocess.run(["osascript", "-e", script], check=True, stdout=subprocess.DEVNULL)
-    print("opened %s in a new %s window:\n  %s" % (a.member, "Ghostty" if term == "ghostty" else "Terminal", cmd))
+    term = _resolve_terminal(getattr(a, "terminal", None), group=False)
+    _open_terminal_window(term, cmd, raw, keep_shell=True)
+    label = {"iterm": "iTerm2", "ghostty": "Ghostty"}.get(term, "Terminal")
+    print("opened %s in a new %s window:\n  %s" % (raw, label, cmd))
 
 
 LAUNCHD = """<?xml version="1.0" encoding="UTF-8"?>
@@ -440,6 +730,7 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     s = sub.add_parser("teams", help="show all teams, or one team")
     s.add_argument("name", nargs="?")
+    s.add_argument("--json", action="store_true", help="output raw JSON")
     s.set_defaults(fn=cmd_teams)
 
     s = sub.add_parser("forget", help="remove stale (offline) agent identities")
@@ -466,13 +757,23 @@ def main(argv: Optional[List[str]] = None) -> None:
     s.add_argument("agent")
     s.set_defaults(fn=cmd_wake_reset)
 
-    s = sub.add_parser("open", help="open a member's session interactively (macOS Terminal; Claude gets live push)")
-    s.add_argument("member")
-    s.add_argument("--team")
-    s.add_argument("--print", action="store_true", help="only print the command")
-    s.add_argument("--terminal", choices=["ghostty", "terminal"],
-                   help="default: Ghostty if installed, else Terminal.app (or $YOUCHAT_TERMINAL)")
-    s.set_defaults(fn=cmd_open)
+    for cmd_name, is_grp, hlp in (
+        ("open", False, "open a whole team group (iTerm2 + tmux -CC tabs) or a single member session"),
+        ("group", True, "open a team's group chat in iTerm2 + tmux -CC (one tab per agent, local or over --ssh)"),
+    ):
+        s = sub.add_parser(cmd_name, help=hlp)
+        s.add_argument("member", nargs="?", help="team name or member name")
+        s.add_argument("--team", help="team name (when opening a specific member, or instead of positional arg)")
+        s.add_argument("--group", "-g", action="store_true", default=is_grp, help="treat target as a team name")
+        s.add_argument("--ssh", metavar="HOST", help="open group/member on remote host via SSH (e.g. macmini)")
+        s.add_argument("--tail", action="store_true", help="add a 'tail' tab following team messages")
+        cc = s.add_mutually_exclusive_group()
+        cc.add_argument("--cc", dest="cc", action="store_true", default=None, help="use tmux -CC (iTerm2 native tabs)")
+        cc.add_argument("--no-cc", dest="cc", action="store_false", help="use standard tmux attach instead of -CC")
+        s.add_argument("--print", action="store_true", help="only print the shell command")
+        s.add_argument("--terminal", choices=["iterm", "iterm2", "ghostty", "terminal"],
+                       help="terminal app (default: iTerm2 for groups, or $YOUCHAT_TERMINAL)")
+        s.set_defaults(fn=cmd_open)
 
     s = sub.add_parser("hook", help="agent hooks: 'agy-stop' (run by Antigravity), 'install-agy' (register it)")
     s.add_argument("name", choices=["agy-stop", "install-agy"])
