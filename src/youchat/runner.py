@@ -63,9 +63,12 @@ def which(exe: str) -> str:
 
 def build_command(job: Dict[str, Any]) -> Tuple[List[str], List[str]]:
     """Return (argv, notes) for one headless turn of the member's session."""
+    from youchat.hub import CLI_DEFAULTS
     cli, sid, prompt = job["cli"], job.get("session_id") or "", job["prompt"]
+    dfl = CLI_DEFAULTS.get(cli, {})
     o = job.get("options") or {}
-    model, effort = job.get("model") or "", job.get("effort") or ""
+    model = job.get("model") or dfl.get("model") or ""
+    effort = job.get("effort") or dfl.get("effort") or ""
     perm = str(o.get("permission_mode") or "").lower()
     notes: List[str] = []
     if cli == "claude":
@@ -96,7 +99,7 @@ def build_command(job: Dict[str, Any]) -> Tuple[List[str], List[str]]:
             cmd += ["--approve-for-me"]
         cmd += ["resume", sid, prompt] if sid else [prompt]
     elif cli == "antigravity":
-        if o.get("boost") and job.get("heavy"):
+        if o.get("boost", True) and job.get("heavy"):
             prompt = "/boost " + prompt  # /boost is a per-task command; print mode expands slash commands
             notes.append("boost")
         cmd = [which("agy"), "-p", prompt, "--output-format", "json"]

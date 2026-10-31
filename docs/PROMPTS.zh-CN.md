@@ -38,9 +38,13 @@ youchat 工具调用（`find_sessions`、`create_team`、`add_member`、`send_me
 - <名字-3>：<例如：运行实验/案例>
 目标：<一两句话>。
 交接顺序：<例如：总控派任务 → 开发实现并测试 → handoff 给运行 → result 交回开发 → review_request 给总控 → review>。
+各会话默认模型与 effort（请先向我确认每个会话的 model 和 effort 等级）：
+- Antigravity (agy)：model=gemini-4-argon-high, effort=high, boost=true
+- Codex (codex)：model=gpt-6.1-sol, effort=xhigh
+- Claude Code (claude)：model=claude-opus-5-5, effort=high
 后台运行时的权限：permission_mode=<default | acceptEdits | bypass>。
 
-先给我起草章程和成员列表，在我确认前不要创建任何东西。
+先给我起草章程和成员列表（含每个会话的模型与 effort），在我确认前不要创建任何东西。
 我确认后：create_team，逐个 add_member，然后给 <名字-?> 发开工任务。
 ```
 
@@ -48,10 +52,10 @@ youchat 工具调用（`find_sessions`、`create_team`、`add_member`、`send_me
 
 ```text
 用 youchat 创建一个叫 <TEAM> 的小组，成员都是新对话（session_id 填 "new"）：
-- <TEAM>-DEV-CLD-1：cli=claude，model=<...>，effort=<low|medium|high|xhigh|max>，cwd=<目录>，职责：<...>
-- <TEAM>-RUN-CDX-1：cli=codex，model=<...>，ultra=<true|false>，cwd=<目录>，职责：<...>
-- <TEAM>-LEAD-AGY-1：cli=antigravity，boost=true，cwd=<目录>，职责：<...>
-目标：<...>。先起草章程等我确认，然后建组并发出第一个任务。
+- <TEAM>-DEV-CLD-1：cli=claude，model=claude-opus-5-5，effort=high，cwd=<目录>，职责：<...>
+- <TEAM>-RUN-CDX-1：cli=codex，model=gpt-6.1-sol，effort=xhigh，cwd=<目录>，职责：<...>
+- <TEAM>-LEAD-AGY-1：cli=antigravity，model=gemini-4-argon-high，effort=high，boost=true，cwd=<目录>，职责：<...>
+目标：<...>。先起草章程并向我确认各会话的 model 与 effort 等级，等我确认后再建组并发出第一个任务。
 新对话会在第一次收到消息时自动创建。
 ```
 

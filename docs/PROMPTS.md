@@ -43,9 +43,13 @@ Roles:
 Goal: <one or two sentences>.
 Hand-off order: <e.g. lead assigns → dev implements & tests → handoff to runner → result back to dev →
 review_request to lead → review>.
+Default model & effort per session (confirm each session's model and effort level with me first):
+- Antigravity (agy): model=gemini-4-argon-high, effort=high, boost=true
+- Codex (codex): model=gpt-6.1-sol, effort=xhigh
+- Claude Code (claude): model=claude-opus-5-5, effort=high
 Background turns may use permission_mode=<default | acceptEdits | bypass>.
 
-Draft the charter and the member list for me first. Create nothing until I approve.
+Draft the charter and the member list (including each session's model and effort) for me first. Create nothing until I approve.
 After I approve: create_team, add_member for each, then send the kickoff task to <NAME-?>.
 ```
 
@@ -53,10 +57,10 @@ After I approve: create_team, add_member for each, then send the kickoff task to
 
 ```text
 Use youchat to create a team called <TEAM> with NEW sessions (session_id "new"):
-- <TEAM>-DEV-CLD-1: cli=claude, model=<...>, effort=<low|medium|high|xhigh|max>, cwd=<dir>, role: <...>
-- <TEAM>-RUN-CDX-1: cli=codex, model=<...>, ultra=<true|false>, cwd=<dir>, role: <...>
-- <TEAM>-LEAD-AGY-1: cli=antigravity, boost=true, cwd=<dir>, role: <...>
-Goal: <...>. Draft the charter, wait for my approval, then create the team and send the first task.
+- <TEAM>-DEV-CLD-1: cli=claude, model=claude-opus-5-5, effort=high, cwd=<dir>, role: <...>
+- <TEAM>-RUN-CDX-1: cli=codex, model=gpt-6.1-sol, effort=xhigh, cwd=<dir>, role: <...>
+- <TEAM>-LEAD-AGY-1: cli=antigravity, model=gemini-4-argon-high, effort=high, boost=true, cwd=<dir>, role: <...>
+Goal: <...>. Draft the charter and ask me to confirm each session's model and effort level, then create the team and send the first task.
 The sessions are created automatically the first time they receive a message.
 ```
 

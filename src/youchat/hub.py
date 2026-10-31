@@ -134,6 +134,13 @@ class Conn:
         self.stale_hwm: int = 0
 
 
+CLI_DEFAULTS: Dict[str, Dict[str, Any]] = {
+    "antigravity": {"model": "gemini-4-argon-high", "effort": "high", "options": {"boost": True}},
+    "codex": {"model": "gpt-6.1-sol", "effort": "xhigh", "options": {}},
+    "claude": {"model": "claude-opus-5-5", "effort": "high", "options": {}},
+}
+
+
 class Hub:
     def __init__(self, db_path: str):
         self.db = sqlite3.connect(db_path, isolation_level=None)
@@ -478,11 +485,16 @@ class Hub:
             for k, v in sets.items():
                 self.db.execute("UPDATE members SET %s=? WHERE team=? AND agent=?" % k, (str(v), team, agent))
         else:
-            vals = {k: str(fields.get(k) or "") for k in MEMBER_FIELDS}
+            cli = str(fields.get("cli") or "")
+            dfl = CLI_DEFAULTS.get(cli, {})
+            vals = {k: str(fields.get(k) or dfl.get(k) or "") for k in MEMBER_FIELDS}
+            opts = dict(dfl.get("options") or {})
+            if options:
+                opts.update(options)
             self.db.execute(
                 "INSERT INTO members(team, agent, %s, options, joined_at) VALUES(?,?,%s,?,?)"
                 % (", ".join(MEMBER_FIELDS), ",".join("?" * len(MEMBER_FIELDS))),
-                [team, agent] + [vals[k] for k in MEMBER_FIELDS] + [json.dumps(options or {}, ensure_ascii=False), now])
+                [team, agent] + [vals[k] for k in MEMBER_FIELDS] + [json.dumps(opts, ensure_ascii=False), now])
             log("member added: %s -> %s" % (agent, team))
         return self._team_dict(team)
 

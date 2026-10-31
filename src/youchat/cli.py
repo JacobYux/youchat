@@ -204,12 +204,15 @@ def _quote_cwd(cwd: str) -> str:
 
 def interactive_command(m: dict) -> str:
     """Shell command that opens member m's own session interactively (channel push on for Claude)."""
+    from youchat.hub import CLI_DEFAULTS
     from youchat.runner import BYPASS
     o = m.get("options") or {}
     perm = str(o.get("permission_mode") or "").lower()
     bypass = perm in BYPASS
     sid, cli = m.get("session_id") or "", m.get("cli") or ""
-    model, effort = m.get("model") or "", m.get("effort") or ""
+    dfl = CLI_DEFAULTS.get(cli, {})
+    model = m.get("model") or dfl.get("model") or ""
+    effort = m.get("effort") or dfl.get("effort") or ""
     if cli == "claude":
         argv = ["claude"]
         if bypass:

@@ -255,7 +255,7 @@ def _resolve_identity(hub: HubClient, pid: int, cli_kind: str, args: List[str],
                         elif sid and not m.get("session_id"):
                             hub.call("bind_session", {"agent": agent, "session_id": sid}, timeout=5)
                         opts = m.get("options") or {}
-                        if opts.get("boost"):
+                        if opts.get("boost", cli_kind == "antigravity"):
                             boost = True
     except HubError:
         pass
