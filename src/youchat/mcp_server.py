@@ -240,8 +240,11 @@ class McpServer:
 
     # -- live push into the session (Claude Code channels) -------------------------------------
     def channels_supported(self) -> bool:
-        if self.kind() != "claude" or os.environ.get("YOUCHAT_CHANNEL", "1") == "0":
+        ch = os.environ.get("YOUCHAT_CHANNEL", "1")
+        if self.kind() != "claude" or ch == "0":
             return False
+        if ch == "force":
+            return True
         try:
             from youchat.sessions import _classify_agent_proc, _ps
             rows = {int(p): (int(pp), a) for p, pp, a in _ps() if p.isdigit() and pp.isdigit()}

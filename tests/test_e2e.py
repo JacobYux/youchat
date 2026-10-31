@@ -230,7 +230,7 @@ class E2E(unittest.TestCase):
 
     def test_mcp_channel_push(self):
         sender = self.agent("CH-SENDER")
-        env = dict(self.env, YOUCHAT_NAME="CH-CLD")
+        env = dict(self.env, YOUCHAT_NAME="CH-CLD", YOUCHAT_CHANNEL="force")
         p = subprocess.Popen([sys.executable, "-m", "youchat", "mcp"], env=env,
                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         try:
