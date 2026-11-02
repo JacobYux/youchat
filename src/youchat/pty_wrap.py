@@ -30,7 +30,7 @@ from youchat.common import HubClient, HubError
 from youchat.runner import EXTRA_PATH, _agy_transcript_incomplete
 from youchat.sessions import HOME, SESSION_ARG_RE, claude_running, codex_recent_thread_ids, lsof_session_ids
 
-HEAVY_KINDS = {"task", "handoff", "review_request"}
+HEAVY_KINDS = {"task", "handoff", "review_request", "review"}
 NON_INTERACTIVE_AGY = {"-p", "--print", "mcp", "--help", "-h", "--version", "-v"}
 NON_INTERACTIVE_CODEX_SUB = {"exec", "e", "mcp", "login", "logout", "completion", "help", "review", "cloud"}
 NON_INTERACTIVE_FLAGS = {"--help", "-h", "--version", "-V"}

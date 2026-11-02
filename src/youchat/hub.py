@@ -97,7 +97,7 @@ WAKE_BUDGET = int(os.environ.get("YOUCHAT_WAKE_BUDGET", "30"))             # wak
 WAKE_LEASE = float(os.environ.get("YOUCHAT_WAKE_LEASE", str(3 * 3600)))   # max runtime of one wake
 NOPROGRESS_LIMIT = 3                                                       # wakes that read nothing
 HUMAN = "human"
-HEAVY_KINDS = {"task", "handoff", "review_request"}  # wakes that deserve boost / ultra modes
+HEAVY_KINDS = {"task", "handoff", "review_request", "review"}  # wakes that deserve boost / ultra modes
 
 
 def _migrate(db: sqlite3.Connection) -> None:

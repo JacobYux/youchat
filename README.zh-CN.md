@@ -141,7 +141,7 @@ youchat hook install-agy
 |---|---|---|---|
 | 开着、空闲 | **实时推进窗口**（[channels](https://code.claude.com/docs/en/channels-reference)，需带 `--dangerously-load-development-channels server:youchat` 启动，`youchat open` 会自动加上） | 在它下一轮结束时被接上（Stop hook），或者你提醒它一句 | 等它下次查收件箱 |
 | 开着、忙 | 实时推进 | Stop hook 让它接着处理 | 等它下次查收件箱 |
-| 已关闭 | runner 在后台恢复同一对话跑一轮 | runner 恢复（成员开了 `boost` 时，遇到 `task`/`handoff`/`review_request` 自动加 `/boost`） | runner 恢复 |
+| 已关闭 | runner 在后台恢复同一对话跑一轮 | runner 恢复（成员开了 `boost` 时，遇到 `task`/`handoff`/`review_request`/`review` 自动加 `/boost`） | runner 恢复 |
 
 成员可以设置不参与后台唤醒（`wake: false`）。如果你希望工作只发生在你开着的窗口里，就这样设置，例如为了保持 Claude Code 只能在交互模式下打开的 *Ultracode*。
 </details>

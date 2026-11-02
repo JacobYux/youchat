@@ -154,7 +154,7 @@ inbox). A session gets its name in one of three ways:
 |---|---|---|---|
 | Open, idle | **pushed live** into the window ([channels](https://code.claude.com/docs/en/channels-reference), start with `--dangerously-load-development-channels server:youchat`; `youchat open` does it) | picked up at the end of its next turn (Stop hook), or when you nudge it | when it next checks its inbox |
 | Open, busy | pushed live | Stop hook continues the turn | when it next checks its inbox |
-| Closed | runner resumes the same session for one turn | runner resumes it (`/boost` added for `task`/`handoff`/`review_request` if the member has `boost`) | runner resumes it |
+| Closed | runner resumes the same session for one turn | runner resumes it (`/boost` added for `task`/`handoff`/`review_request`/`review` if the member has `boost`) | runner resumes it |
 
 Members can opt out of background wakes (`wake: false`). Do this when you want work to happen only in the window
 you keep open, e.g. to keep Claude Code's interactive-only *Ultracode* on.

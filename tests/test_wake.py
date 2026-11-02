@@ -246,6 +246,12 @@ class Wake(unittest.TestCase):
         self.assertEqual(SESSION_ARG_RE.findall("codex resume %s -m gpt-6.1-sol" % u2), [u2])
         self.assertEqual(SESSION_ARG_RE.findall("sqlite3 ~/.codex/db 'SELECT * WHERE id=%s'" % u1), [])
 
+    def test_8b_review_counts_as_heavy(self):
+        # review feedback often asks for rework, so it gets /boost like task/handoff/review_request
+        from youchat import hub, pty_wrap
+        self.assertIn("review", hub.HEAVY_KINDS)
+        self.assertEqual(hub.HEAVY_KINDS, pty_wrap.HEAVY_KINDS)
+
     def test_9_pty_live_push(self):
         import pty
         import select
