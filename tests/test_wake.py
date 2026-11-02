@@ -357,6 +357,24 @@ class Wake(unittest.TestCase):
         self.assertIsNone(
             _classify_agent_proc("/Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Codex --type=renderer")
         )
+        self.assertIsNone(
+            _classify_agent_proc("/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex -c forced_login_method=\"chatgpt\" exec-server --remote https://codex-cloud-environments.chatgpt.com/api")
+        )
+        from youchat.cli import _is_member_open
+        self.assertFalse(
+            _is_member_open(
+                {"agent": "DFI-DEV-CDX-1", "cli": "codex", "host": "", "session_id": "01a143bc-10b3-7592-ad84-cb82e0a7eba1", "online": True},
+                None,
+                set(),
+            )
+        )
+        self.assertTrue(
+            _is_member_open(
+                {"agent": "DFI-DEV-CDX-1", "cli": "codex", "host": "", "session_id": "01a143bc-10b3-7592-ad84-cb82e0a7eba1", "online": True},
+                None,
+                {"01a143bc-10b3-7592-ad84-cb82e0a7eba1"},
+            )
+        )
         self.assertEqual(_classify_agent_proc("codex resume 01a143bc-10b3-7592-ad84-cb82e0a7eba1 --yolo"), "codex")
         self.assertEqual(_classify_agent_proc("agy --dangerously-skip-permissions"), "agy")
         self.assertEqual(_classify_agent_proc("claude --resume 6a5ed01e-b296-4055-8837-3f65b072bc60"), "claude")

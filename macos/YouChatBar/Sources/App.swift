@@ -51,7 +51,8 @@ struct ContentView: View {
     private func title(_ t: Tab) -> String {
         switch t {
         case .groups:
-            return model.teams.isEmpty ? "Groups" : "Groups · \(model.teams.count)"
+            let n = model.visibleTeams.count
+            return n == 0 ? "Groups" : "Groups · \(n)"
         case .usage:
             let worst = model.worstWeekly
             return worst > 0 ? "Usage · \(Int(worst.rounded()))%" : "Usage"

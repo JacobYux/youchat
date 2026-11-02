@@ -60,5 +60,16 @@ check(UsageParsers.parseCodexLine(#"{"type":"event_msg","payload":{"type":"agent
 let stale = UsageWindow(label: "Week", usedPercent: 82, resetsAt: date("2026-10-01T00:00:00Z"))
 check(stale.effectiveUsed(now: now) == 0, "stale window reads as reset")
 
+// Team decoding with and without sshHost, plus RemoteSnapshot & GroupsConfig.
+let snapJSON = #"{"teams":[{"name":"ANDAIR","charter":"Andair team","status":"active","created_by":"h","created_at":100,"members":[]}],"messages":[{"seq":1,"thread_id":"t-1","sender":"AA-CLD","recipient":"team:ANDAIR","body":"hi","created_at":101}]}"#
+let snap = try! JSONDecoder().decode(RemoteSnapshot.self, from: Data(snapJSON.utf8))
+check(snap.teams.count == 1 && snap.teams[0].id == "ANDAIR" && snap.teams[0].sshHost == nil, "local team id")
+var rTeam = snap.teams[0]
+rTeam.sshHost = "macmini"
+check(rTeam.id == "macmini:ANDAIR", "remote team id prefixes sshHost")
+let cfgData = try! JSONEncoder().encode(GroupsConfig(hidden: ["Youchat-Toolbar"], remoteHosts: ["macmini"]))
+let cfg = try! JSONDecoder().decode(GroupsConfig.self, from: cfgData)
+check(cfg.hidden.contains("Youchat-Toolbar") && cfg.remoteHosts == ["macmini"], "GroupsConfig round-trip")
+
 print(failures == 0 ? "\nALL PASSED" : "\n\(failures) FAILED")
 exit(failures == 0 ? 0 : 1)

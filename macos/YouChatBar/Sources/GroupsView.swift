@@ -4,19 +4,23 @@ import SwiftUI
 struct GroupsView: View {
     @EnvironmentObject var model: AppModel
 
-    var sorted: [Team] {
-        model.teams.sorted { a, b in
+    private func sort(_ list: [Team]) -> [Team] {
+        list.sorted { a, b in
             if (a.status == "active") != (b.status == "active") { return a.status == "active" }
-            return (model.lastActive(a) ?? .distantPast) > (model.lastActive(b) ?? .distantPast)
+            let ta = model.lastActive(a) ?? Date(timeIntervalSince1970: a.created_at)
+            let tb = model.lastActive(b) ?? Date(timeIntervalSince1970: b.created_at)
+            return ta > tb
         }
     }
 
     var body: some View {
+        let visible = sort(model.visibleTeams)
+        let hidden = sort(model.hiddenTeams)
         LazyVStack(alignment: .leading, spacing: 10) {
             if let err = model.hubError {
                 Card(accent: Color.red.opacity(0.35)) {
                     VStack(alignment: .leading, spacing: 4) {
-                        Label("连不上 hub", systemImage: "bolt.horizontal.circle.fill")
+                        Label("连不上本地 hub", systemImage: "bolt.horizontal.circle.fill")
                             .font(.callout).foregroundStyle(.red)
                         Text("启动 hub：`youchat hub`，或连隧道：`youchat tunnel <host>`")
                             .font(.caption).foregroundStyle(.secondary)
@@ -25,13 +29,51 @@ struct GroupsView: View {
                     }
                 }
             }
-            if model.teams.isEmpty && model.hubError == nil {
-                Text("还没有小组").foregroundStyle(.secondary)
+            ForEach(model.remoteErrors.keys.sorted(), id: \.self) { host in
+                if let rerr = model.remoteErrors[host] {
+                    Card(accent: Color.orange.opacity(0.35)) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Label("远程主机 \(host) 暂未连接", systemImage: "network.slash")
+                                .font(.caption).foregroundStyle(.orange)
+                            Text(rerr).font(.caption2).foregroundStyle(.tertiary).lineLimit(2)
+                        }
+                    }
+                }
+            }
+            if visible.isEmpty && model.hubError == nil {
+                Text(hidden.isEmpty ? "还没有小组" : "所有小组均已隐藏").foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .center).padding(.vertical, 24)
             }
-            ForEach(sorted) { TeamCard(team: $0) }
+            ForEach(visible) { TeamCard(team: $0) }
+            if !hidden.isEmpty {
+                hiddenSection(hidden)
+            }
         }
         .padding(10)
+    }
+
+    private func hiddenSection(_ hidden: [Team]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button {
+                model.showHidden.toggle()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: model.showHidden ? "chevron.down" : "chevron.right")
+                        .font(.caption2).foregroundStyle(.tertiary)
+                    Text("已隐藏 \(hidden.count) 个小组（\(hidden.map(\.name).joined(separator: "、"))）")
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    Spacer()
+                    Text(model.showHidden ? "收起" : "显示")
+                        .font(.caption2).foregroundStyle(.tertiary)
+                }
+                .padding(.horizontal, 6).padding(.vertical, 4)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if model.showHidden {
+                ForEach(hidden) { TeamCard(team: $0).opacity(0.75) }
+            }
+        }
     }
 }
 
@@ -61,15 +103,17 @@ struct TeamCard: View {
     @EnvironmentObject var model: AppModel
     let team: Team
     @State private var showCharter = false
+    @State private var confirmDelete = false
 
     var body: some View {
         let active = team.status == "active"
+        let msgs = model.recent[team.id] ?? model.recent[team.name] ?? []
         Card(accent: active ? Color.accentColor.opacity(0.3) : nil) {
             VStack(alignment: .leading, spacing: 9) {
                 header(active)
                 purpose
                 members
-                RecentMessages(messages: Array((model.recent[team.name] ?? []).prefix(3)))
+                RecentMessages(messages: Array(msgs.prefix(3)))
             }
         }
     }
@@ -77,25 +121,41 @@ struct TeamCard: View {
     private func header(_ active: Bool) -> some View {
         let online = team.members.filter { $0.online }.count
         let hasAgents = team.members.contains { $0.cli != "human" }
+        let hidden = model.isHidden(team)
         return HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Text(team.name).font(.headline)
-            Pill(text: team.status, color: active ? .green : Color.secondary)
-            Spacer()
-            Text("\(online)/\(team.members.count) 在线")
-                .font(.caption).monospacedDigit()
-                .foregroundStyle(online > 0 ? Color.secondary : Color.secondary.opacity(0.6))
-            if let t = model.lastActive(team) {
-                Text("· \(Fmt.relative(t))").font(.caption).foregroundStyle(.tertiary)
+            Text(team.name).font(.headline).lineLimit(1).truncationMode(.tail)
+            Pill(text: team.status, color: active ? .green : Color.secondary).fixedSize()
+            if let h = team.sshHost, !h.isEmpty {
+                Pill(text: h, color: .indigo).fixedSize()
             }
-            if hasAgents {
-                Button { model.openGroup(team) } label: { Image(systemName: "macwindow.badge.plus") }
-                    .buttonStyle(.borderless).help("在 iTerm2 + tmux 中打开整个小组（youchat open \(team.name)）")
+            Spacer(minLength: 4)
+            if confirmDelete {
+                Button("确认删除") { model.deleteGroup(team) }
+                    .buttonStyle(.borderless).font(.caption).foregroundStyle(.red).fixedSize()
+                Button("取消") { confirmDelete = false }
+                    .buttonStyle(.borderless).font(.caption).foregroundStyle(.secondary).fixedSize()
+            } else {
+                Text("\(online)/\(team.members.count) 在线")
+                    .font(.caption).monospacedDigit().lineLimit(1).fixedSize()
+                    .foregroundStyle(online > 0 ? Color.secondary : Color.secondary.opacity(0.6))
+                if let t = model.lastActive(team) {
+                    Text("· \(Fmt.relative(t))").font(.caption).foregroundStyle(.tertiary).lineLimit(1).fixedSize()
+                }
+                if hasAgents {
+                    Button { model.openGroup(team) } label: { Image(systemName: "macwindow.badge.plus") }
+                        .buttonStyle(.borderless).help("在 iTerm2 + tmux 中打开整个小组（youchat open \(team.name)）")
+                }
+                Button { model.toggleHide(team) } label: {
+                    Image(systemName: hidden ? "eye" : "eye.slash")
+                }
+                .buttonStyle(.borderless).help(hidden ? "取消隐藏此小组" : "隐藏此小组（可在底部恢复）")
+                Button { confirmDelete = true } label: { Image(systemName: "trash") }
+                    .buttonStyle(.borderless).foregroundStyle(.secondary).help("删除此小组")
             }
         }
     }
 
     private var purpose: some View {
-        // One source line, two visual lines: a whole thought instead of a wall cut mid-path.
         let sum = charterSummary(team.charter, maxLines: 1)
         return VStack(alignment: .leading, spacing: 3) {
             SectionLabel(text: "用途", systemImage: "target")
@@ -118,7 +178,7 @@ struct TeamCard: View {
     private var members: some View {
         VStack(alignment: .leading, spacing: 5) {
             SectionLabel(text: "成员与分工", systemImage: "person.2.fill")
-            ForEach(team.members) { MemberRow(member: $0) }
+            ForEach(team.members) { MemberRow(member: $0, sshHost: team.sshHost) }
         }
     }
 }
@@ -126,6 +186,7 @@ struct TeamCard: View {
 struct MemberRow: View {
     @EnvironmentObject var model: AppModel
     let member: Member
+    var sshHost: String? = nil
 
     var cliColor: Color {
         switch member.cli {
@@ -138,6 +199,7 @@ struct MemberRow: View {
     }
 
     var body: some View {
+        let hostLabel = member.host.isEmpty ? (sshHost ?? "") : member.host
         HStack(alignment: .top, spacing: 6) {
             Circle().fill(member.online ? Color.green : Color.primary.opacity(0.18))
                 .frame(width: 6, height: 6).padding(.top, 5)
@@ -145,12 +207,12 @@ struct MemberRow: View {
                 HStack(spacing: 5) {
                     Text(member.agent).font(.system(.caption, design: .monospaced)).bold()
                     Pill(text: member.cli.isEmpty ? "?" : member.cli, color: cliColor)
-                    if !member.host.isEmpty {
-                        Text(member.host).font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
+                    if !hostLabel.isEmpty {
+                        Text(hostLabel).font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
                     }
                     Spacer()
                     if !member.online && member.cli != "human" {
-                        Button { model.open(member) } label: { Image(systemName: "terminal") }
+                        Button { model.open(member, sshHost: sshHost) } label: { Image(systemName: "terminal") }
                             .buttonStyle(.borderless).help("在终端里打开（youchat open）")
                     }
                 }

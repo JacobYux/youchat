@@ -504,6 +504,18 @@ class Hub:
         self.db.execute("DELETE FROM members WHERE team=? AND agent=?", (team, agent))
         return self._team_dict(team)
 
+    def op_team_delete(self, conn: Conn, name: str) -> Dict[str, Any]:
+        self._team_row(name)
+        members = [r[0] for r in self.db.execute("SELECT agent FROM members WHERE team=?", (name,)).fetchall()]
+        self.db.execute("DELETE FROM members WHERE team=?", (name,))
+        self.db.execute("DELETE FROM teams WHERE name=?", (name,))
+        for a in members:
+            self.noprogress.pop(a, None)
+            self.last_wake.pop(a, None)
+            self.leases.pop(a, None)
+        log("team deleted:", name, "by", conn.name)
+        return {"deleted": name, "members": members}
+
     def op_team_get(self, conn: Conn, name: str) -> Dict[str, Any]:
         return self._team_dict(name)
 

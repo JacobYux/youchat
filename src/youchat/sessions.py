@@ -226,8 +226,8 @@ LSOF_SESSION_RE = re.compile(
     + UUID_RE.pattern + r")(?:\.lock|\.db|\.jsonl)"
 )
 _IGNORE_PROC_MARKERS = (
-    "--type=", "Codex Framework.framework", "SkyComputerUseService", "chrome-extension://",
-    "/Helpers/disclaimer", "language_server",
+    "--type=", "Codex Framework.framework", "CodexCLI.app", "exec-server", "codex-code-mode-host",
+    "SkyComputerUseService", "chrome-extension://", "/Helpers/disclaimer", "language_server",
 )
 
 

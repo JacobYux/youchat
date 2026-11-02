@@ -76,12 +76,40 @@ def cmd_thread(a: argparse.Namespace) -> None:
 
 def cmd_teams(a: argparse.Namespace) -> None:
     from youchat.mcp_server import fmt_team
-    c = HubClient()
-    teams = [c.call("team_get", {"name": a.name})] if a.name else c.call("teams")
+    ssh_host = getattr(a, "ssh", None)
+    if ssh_host:
+        teams = _fetch_remote_teams(ssh_host, a.name)
+    else:
+        c = HubClient()
+        teams = [c.call("team_get", {"name": a.name})] if a.name else c.call("teams")
     if getattr(a, "json", False):
         print(json.dumps(teams, ensure_ascii=False))
         return
     print("\n\n".join(fmt_team(t) for t in teams) if teams else "(no teams yet)")
+
+
+def _delete_local_team(name: str) -> None:
+    try:
+        HubClient().call("team_delete", {"name": name})
+        return
+    except HubError as e:
+        if "unknown op" not in str(e) and "cannot reach youchat hub" not in str(e):
+            raise
+    import sqlite3
+    db = sqlite3.connect(os.path.join(home_dir(), "hub.db"), timeout=5.0, isolation_level=None)
+    if not db.execute("SELECT 1 FROM teams WHERE name=?", (name,)).fetchone():
+        raise HubError("no such team %r" % name)
+    db.execute("DELETE FROM members WHERE team=?", (name,))
+    db.execute("DELETE FROM teams WHERE name=?", (name,))
+
+
+def cmd_delete_team(a: argparse.Namespace) -> None:
+    ssh_host = getattr(a, "ssh", None)
+    if ssh_host:
+        _delete_remote_team(ssh_host, a.team)
+    else:
+        _delete_local_team(a.team)
+    print("deleted team %s%s" % (a.team, " on " + ssh_host if ssh_host else ""))
 
 
 def cmd_forget(a: argparse.Namespace) -> None:
@@ -400,13 +428,85 @@ def _open_terminal_window(term: str, cmd: str, title: str, keep_shell: bool = Fa
         subprocess.run(["osascript", "-e", script], check=True, env=env, stdout=subprocess.DEVNULL)
 
 
+_REMOTE_TEAMS_PY = (
+    "import json,os,socket,sqlite3\n"
+    "sock=os.environ.get('YOUCHAT_SOCK') or ('/tmp/youchat-%d/hub.sock'%os.getuid())\n"
+    "try:\n"
+    " s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);s.settimeout(5)\n"
+    " s.connect(sock);s.sendall(b'{\"id\":1,\"op\":\"teams\",\"args\":{}}\\n')\n"
+    " b=b''\n"
+    " while b'\\n' not in b:\n"
+    "  c=s.recv(65536)\n"
+    "  if not c: break\n"
+    "  b+=c\n"
+    " s.close();r=json.loads(b.split(b'\\n',1)[0])\n"
+    " ts=r.get('result') or []\n"
+    "except Exception:\n"
+    " p=os.path.expanduser(os.environ.get('YOUCHAT_HOME') or '~/.youchat')+'/hub.db'\n"
+    " if not os.path.exists(p):ts=[]\n"
+    " else:\n"
+    "  c=sqlite3.connect(p);c.row_factory=sqlite3.Row;ts=[]\n"
+    "  for t in c.execute('SELECT * FROM teams ORDER BY created_at'):\n"
+    "   d=dict(t);ms=[]\n"
+    "   for m in c.execute('SELECT * FROM members WHERE team=? ORDER BY joined_at',(d['name'],)):\n"
+    "    md=dict(m,online=False);md['options']=json.loads(md.get('options') or '{}');ms.append(md)\n"
+    "   d['members']=ms;ts.append(d)\n"
+    "print(json.dumps(ts))"
+)
+
+
 def _fetch_remote_teams(ssh_host: str, team_name: Optional[str] = None) -> List[dict]:
-    tcmd = "youchat teams --json" + (" " + shlex.quote(team_name) if team_name else "")
-    r = subprocess.run(["ssh", ssh_host, "%s; %s" % (REMOTE_PATH_EXPORT, tcmd)],
+    import base64
+    b64 = base64.b64encode(_REMOTE_TEAMS_PY.encode()).decode()
+    tcmd = 'youchat hub --daemon >/dev/null 2>&1 || true; youchat teams --json 2>/dev/null || python3 -c "import base64;exec(base64.b64decode(\'%s\'))"' % b64
+    r = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", ssh_host,
+                        "%s; %s" % (REMOTE_PATH_EXPORT, tcmd)],
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30, env=_clean_env())
     if r.returncode != 0:
         raise HubError(r.stderr.decode("utf-8", "replace").strip() or ("ssh %s failed (%d)" % (ssh_host, r.returncode)))
-    return json.loads(r.stdout.decode("utf-8", "replace"))
+    teams = json.loads(r.stdout.decode("utf-8", "replace"))
+    if team_name:
+        m = _match_team(teams, team_name)
+        if not m:
+            raise HubError("no such team %r on %s" % (team_name, ssh_host))
+        return [m]
+    return teams
+
+
+def _delete_remote_team(ssh_host: str, team_name: str) -> None:
+    import base64
+    py = (
+        "import json,os,socket,sqlite3,sys\nn=sys.argv[1]\n"
+        "sock=os.environ.get('YOUCHAT_SOCK') or ('/tmp/youchat-%d/hub.sock'%os.getuid())\n"
+        "done=False\n"
+        "try:\n"
+        " s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);s.settimeout(4);s.connect(sock)\n"
+        " s.sendall((json.dumps({'id':1,'op':'team_delete','args':{'name':n}})+'\\n').encode());b=b''\n"
+        " while b'\\n' not in b:\n"
+        "  c=s.recv(65536)\n"
+        "  if not c:break\n"
+        "  b+=c\n"
+        " s.close();r=json.loads(b.split(b'\\n',1)[0])\n"
+        " if r.get('ok'):done=True\n"
+        " elif 'unknown op' not in str(r.get('error','')):sys.exit(r.get('error','err'))\n"
+        "except SystemExit:raise\n"
+        "except Exception:pass\n"
+        "if not done:\n"
+        " p=os.path.expanduser(os.environ.get('YOUCHAT_HOME') or '~/.youchat')+'/hub.db'\n"
+        " c=sqlite3.connect(p,timeout=5.0,isolation_level=None)\n"
+        " r=c.execute('SELECT 1 FROM teams WHERE name=?',(n,)).fetchone()\n"
+        " r or sys.exit('no such team '+n)\n"
+        " c.execute('DELETE FROM members WHERE team=?',(n,))\n"
+        " c.execute('DELETE FROM teams WHERE name=?',(n,))"
+    )
+    b64 = base64.b64encode(py.encode()).decode()
+    nb64 = base64.b64encode(team_name.encode()).decode()
+    cmd = '%s; python3 -c "import base64,sys;sys.argv=[\'\',base64.b64decode(\'%s\').decode()];exec(base64.b64decode(\'%s\'))"' % (
+        REMOTE_PATH_EXPORT, nb64, b64)
+    r = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", ssh_host, cmd],
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30, env=_clean_env())
+    if r.returncode != 0:
+        raise HubError(r.stderr.decode("utf-8", "replace").strip() or ("ssh %s failed (%d)" % (ssh_host, r.returncode)))
 
 
 def _resolve_terminal(raw: Optional[str], group: bool = False) -> str:
@@ -424,6 +524,17 @@ def _resolve_terminal(raw: Optional[str], group: bool = False) -> str:
     return "ghostty" if has_ghostty else ("iterm" if has_iterm else "terminal")
 
 
+def _is_member_open(m: dict, ssh_host: Optional[str], running: Set[str]) -> bool:
+    mhost = (m.get("host") or "").strip().lower()
+    is_remote = bool(ssh_host) or (bool(mhost) and mhost != short_host().lower())
+    if is_remote:
+        return bool(m.get("online"))
+    sid = m.get("session_id") or ""
+    if m.get("cli") == "codex" and sid:
+        return sid in running  # codex app-server daemon can keep MCP online after TUI exits
+    return bool(m.get("online") or (sid and sid in running))
+
+
 def _open_group(team: dict, a: argparse.Namespace) -> None:
     from youchat.sessions import running_session_ids
     members = [m for m in (team.get("members") or []) if m.get("cli") in ("claude", "codex", "antigravity")]
@@ -434,8 +545,7 @@ def _open_group(team: dict, a: argparse.Namespace) -> None:
         if len(hosts) == 1 and next(iter(hosts)) != loc:
             ssh_host = next(iter(hosts.values()))
     running = set() if ssh_host else running_session_ids()
-    already_open = {m["agent"] for m in members
-                    if m.get("online") or (not ssh_host and m.get("session_id") and m["session_id"] in running)}
+    already_open = {m["agent"] for m in members if _is_member_open(m, ssh_host, running)}
     term = _resolve_terminal(getattr(a, "terminal", None), group=True)
     cc_arg = getattr(a, "cc", None)
     use_cc = cc_arg if cc_arg is not None else (term == "iterm")
@@ -524,7 +634,7 @@ def cmd_open(a: argparse.Namespace) -> None:
             raise last_err if isinstance(last_err, HubError) else HubError(str(last_err))
         raise SystemExit("no member %r%s" % (raw, " in team " + team_opt if team_opt else ""))
     mhost = ssh_host or ((m.get("host") or "").strip() if (m.get("host") or "").strip().lower() != short_host().lower() else "")
-    if m["online"] or (not mhost and m["session_id"] and m["session_id"] in running_session_ids()):
+    if _is_member_open(m, mhost or None, set() if mhost else running_session_ids()):
         raise SystemExit("%s is already open (online). Close it first if you want to reopen it." % raw)
     cmd = interactive_command(m)
     if mhost:
@@ -735,8 +845,15 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     s = sub.add_parser("teams", help="show all teams, or one team")
     s.add_argument("name", nargs="?")
+    s.add_argument("--ssh", metavar="HOST", help="query teams on a remote SSH host (e.g. macmini)")
     s.add_argument("--json", action="store_true", help="output raw JSON")
     s.set_defaults(fn=cmd_teams)
+
+    for dname in ("delete-team", "rm-team"):
+        s = sub.add_parser(dname, help="delete a team (and its member roster)")
+        s.add_argument("team", help="team name to delete")
+        s.add_argument("--ssh", metavar="HOST", help="delete team on a remote SSH host (e.g. macmini)")
+        s.set_defaults(fn=cmd_delete_team)
 
     s = sub.add_parser("forget", help="remove stale (offline) agent identities")
     s.add_argument("names", nargs="+")

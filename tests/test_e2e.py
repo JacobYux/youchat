@@ -383,6 +383,38 @@ class E2E(unittest.TestCase):
         finally:
             subprocess.run([real_tmux, "-L", tsock, "kill-server"], stderr=subprocess.DEVNULL)
 
+    def test_delete_team_hub_and_cli(self):
+        from youchat.cli import _REMOTE_TEAMS_PY
+        c = self.agent("DEL-LEAD")
+        c.call("team_create", {"name": "DEL1", "charter": "temp"})
+        c.call("team_add", {"team": "DEL1", "agent": "DEL-A", "cli": "claude"})
+        res = c.call("team_delete", {"name": "DEL1"})
+        self.assertEqual(res["deleted"], "DEL1")
+        self.assertEqual(res["members"], ["DEL-A"])
+        with self.assertRaises(HubError):
+            c.call("team_get", {"name": "DEL1"})
+        # CLI delete-team and rm-team
+        c.call("team_create", {"name": "DEL2", "charter": "temp2"})
+        r = self._cli("delete-team", "DEL2")
+        self.assertEqual(r.returncode, 0, r.stderr.decode())
+        with self.assertRaises(HubError):
+            c.call("team_get", {"name": "DEL2"})
+        self.assertNotEqual(self._cli("rm-team", "NO-SUCH-TEAM").returncode, 0)
+        # SQLite fallback when hub socket is unreachable
+        c.call("team_create", {"name": "DEL3", "charter": "temp3"})
+        c.call("team_add", {"team": "DEL3", "agent": "DEL-B", "cli": "codex"})
+        offline_env = dict(self.env, YOUCHAT_SOCK=os.path.join(self.tmp, "nosock.sock"))
+        dump = subprocess.run([sys.executable, "-c", _REMOTE_TEAMS_PY], env=offline_env,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+        teams_fb = json.loads(dump.stdout.decode())
+        del3 = next(t for t in teams_fb if t["name"] == "DEL3")
+        self.assertIsInstance(del3["members"][0]["options"], dict)
+        r_fb = subprocess.run([sys.executable, "-m", "youchat", "delete-team", "DEL3"], env=offline_env,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15)
+        self.assertEqual(r_fb.returncode, 0, r_fb.stderr.decode())
+        with self.assertRaises(HubError):
+            c.call("team_get", {"name": "DEL3"})
+
 
 if __name__ == "__main__":
     unittest.main()

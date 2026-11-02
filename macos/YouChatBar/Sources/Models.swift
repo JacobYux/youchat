@@ -20,7 +20,8 @@ struct Team: Codable, Identifiable, Hashable {
     let created_by: String
     let created_at: Double
     let members: [Member]
-    var id: String { name }
+    var sshHost: String? = nil
+    var id: String { sshHost.map { "\($0):\(name)" } ?? name }
 }
 
 struct Message: Codable, Identifiable, Hashable {
@@ -32,6 +33,16 @@ struct Message: Codable, Identifiable, Hashable {
     let created_at: Double
     let kind: String?
     var id: Int { seq }
+}
+
+struct GroupsConfig: Codable, Hashable {
+    var hidden: Set<String> = []
+    var remoteHosts: [String] = []
+}
+
+struct RemoteSnapshot: Codable, Hashable {
+    var teams: [Team] = []
+    var messages: [Message] = []
 }
 
 /// One rate-limit window (e.g. "5h" or "Week") of one provider.
@@ -75,7 +86,12 @@ struct ProviderUsage: Codable, Hashable, Identifiable {
     var id: String { provider.rawValue }
 
     /// The weekly window that matters most (highest weekly usage).
+    func weekly(now: Date) -> UsageWindow? {
+        windows.filter { $0.label.contains("Week") }.max { $0.effectiveUsed(now: now) < $1.effectiveUsed(now: now) }
+    }
+
     var weekly: UsageWindow? {
-        windows.filter { $0.label.contains("Week") }.max { $0.effectiveUsed() < $1.effectiveUsed() }
+        let ref = asOf == nil ? (windows.compactMap(\.resetsAt).min()?.addingTimeInterval(-1) ?? Date()) : Date()
+        return weekly(now: ref)
     }
 }

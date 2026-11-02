@@ -175,6 +175,11 @@ TOOLS: List[Dict[str, Any]] = [
         "description": "Remove a member from a team.",
         "inputSchema": {"type": "object", "required": ["team", "name"], "properties": {"team": _S, "name": _S}},
     },
+    {
+        "name": "delete_team",
+        "description": "Delete a team (removes the team and its member roster; message history is preserved).",
+        "inputSchema": {"type": "object", "required": ["team"], "properties": {"team": _S}},
+    },
 ]
 
 
@@ -306,6 +311,17 @@ class McpServer:
         """Ping regularly so presence recovers by itself after a hub restart or tunnel drop
         (the client reconnects and re-claims its name), even while the agent is idle."""
         while True:
+            if self.kind() == "codex":
+                sid = (self.hub.hello_args or {}).get("session_id") or self.self_session_id()
+                if sid:
+                    try:
+                        from youchat.sessions import running_session_ids
+                        if sid not in running_session_ids():
+                            self.hub.close()
+                            time.sleep(20)
+                            continue
+                    except Exception:
+                        pass
             if not self.hub.name or ("@" in self.hub.name and not os.environ.get("YOUCHAT_NAME")):
                 name = self.auto_name()
                 if name and name != self.hub.name:
@@ -499,6 +515,11 @@ class McpServer:
     def tool_remove_member(self, team: str, name: str) -> str:
         me = self.ensure_registered()
         return "Removed.\n\n" + fmt_team(self.hub.call("team_remove", {"team": team, "agent": name}), me)
+
+    def tool_delete_team(self, team: str) -> str:
+        self.ensure_registered()
+        res = self.hub.call("team_delete", {"name": team})
+        return "Deleted team %s." % res["deleted"]
 
     def call_tool(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         fn = getattr(self, "tool_" + name, None)
