@@ -135,9 +135,10 @@ class Conn:
 
 
 CLI_DEFAULTS: Dict[str, Dict[str, Any]] = {
-    "antigravity": {"model": "gemini-4-argon-high", "effort": "high", "options": {"boost": True}},
-    "codex": {"model": "gpt-6.1-sol", "effort": "xhigh", "options": {}},
-    "claude": {"model": "claude-opus-5-5", "effort": "high", "options": {}},
+    "antigravity": {"model": "gemini-4-argon-high", "effort": "high",
+                    "options": {"boost": True, "permission_mode": "bypass"}},
+    "codex": {"model": "gpt-6.1-sol", "effort": "xhigh", "options": {"permission_mode": "bypass"}},
+    "claude": {"model": "claude-opus-5-5", "effort": "high", "options": {"permission_mode": "bypass"}},
 }
 
 

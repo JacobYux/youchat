@@ -207,7 +207,9 @@ def interactive_command(m: dict) -> str:
     from youchat.hub import CLI_DEFAULTS
     from youchat.runner import BYPASS
     o = m.get("options") or {}
-    perm = str(o.get("permission_mode") or "").lower()
+    perm = str(o.get("permission_mode") or "bypass").lower()
+    if perm in ("default", "normal"):
+        perm = ""
     bypass = perm in BYPASS
     sid, cli = m.get("session_id") or "", m.get("cli") or ""
     dfl = CLI_DEFAULTS.get(cli, {})

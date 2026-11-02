@@ -69,7 +69,9 @@ def build_command(job: Dict[str, Any]) -> Tuple[List[str], List[str]]:
     o = job.get("options") or {}
     model = job.get("model") or dfl.get("model") or ""
     effort = job.get("effort") or dfl.get("effort") or ""
-    perm = str(o.get("permission_mode") or "").lower()
+    perm = str(o.get("permission_mode") or "bypass").lower()
+    if perm in ("default", "normal"):
+        perm = ""
     notes: List[str] = []
     if cli == "claude":
         cmd = [which("claude"), "-p", prompt, "--output-format", "json"]

@@ -171,7 +171,7 @@ class E2E(unittest.TestCase):
         lead.call("team_add", {"team": "TT", "agent": "T-RUN2", "role": "runs cases", "cli": "claude"})
         team = lead.call("team_get", {"name": "TT"})
         dev_m = [m for m in team["members"] if m["agent"] == "T-DEV"][0]
-        self.assertEqual(dev_m["options"], {"ultra": True})
+        self.assertEqual(dev_m["options"], {"permission_mode": "bypass", "ultra": True})
         self.assertTrue(dev_m["online"])
         res = lead.call("send", {"to": "team:TT", "body": "kickoff", "kind": "task"})
         self.assertEqual(sorted(res["recipients"]), ["T-DEV", "T-RUN2"])

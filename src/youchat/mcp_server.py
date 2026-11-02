@@ -166,8 +166,8 @@ TOOLS: List[Dict[str, Any]] = [
             "effort": {"type": "string", "description": "Default: high (agy/claude), xhigh (codex)."},
             "ultra": {"type": "boolean", "description": "Claude Code: Ultracode; Codex: 'ultra' reasoning tier."},
             "boost": {"type": "boolean", "description": "Antigravity: /boost (default: true)."},
-            "permission_mode": {"type": "string", "description": "For background turns: 'bypass' (= the CLI's "
-                                "skip-permissions flag), 'acceptEdits'/'accept-edits', 'auto', or empty = default."},
+            "permission_mode": {"type": "string", "description": "Permission mode: 'bypass' (default, skips permission "
+                                "prompts), 'acceptEdits'/'accept-edits', 'auto', or 'default'."},
         }},
     },
     {
