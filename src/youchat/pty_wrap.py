@@ -206,6 +206,13 @@ def _session_mtime(cli_kind: str, sid: str) -> float:
         return 0.0
 
 
+def wake_line(agent: str, count: int, senders: str = "", boost: bool = False) -> str:
+    """The wake prompt typed into an open session. One line: a newline would submit it early."""
+    return ("%s[youchat] 你（%s）有 %d 条新消息%s。"
+            "请先调用 check_inbox 读取全部未读消息，然后按你的职责和小组章程处理，回复时沿用原 thread_id。"
+            % ("/boost " if boost else "", agent, count, "（来自 %s）" % senders if senders else ""))
+
+
 def _is_mouse_or_focus(data: bytes) -> bool:
     return data.startswith((b"\x1b[<", b"\x1b[M", b"\x1b[I", b"\x1b[O"))
 
@@ -319,13 +326,8 @@ def _watcher_loop(master_fd: int, proc: subprocess.Popen, cli_kind: str,
             continue
 
         heavy = any(m.get("kind") in HEAVY_KINDS for m in still_unread)
-        prefix = "/boost " if (cli_kind == "antigravity" and boost and heavy) else ""
         senders = ", ".join(sorted({m.get("sender") or "?" for m in still_unread}))
-        prompt = (
-            "%s[youchat] 你（%s）有 %d 条新消息（来自 %s）。"
-            "请先调用 check_inbox 读取全部未读消息，然后按你的职责和小组章程处理，回复时沿用原 thread_id。"
-            % (prefix, agent, len(still_unread), senders)
-        )
+        prompt = wake_line(agent, len(still_unread), senders, boost=cli_kind == "antigravity" and boost and heavy)
         before_mtime = _session_mtime(cli_kind, sid)
         try:
             os.write(master_fd, prompt.encode("utf-8"))

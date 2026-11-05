@@ -157,6 +157,7 @@ class Hub:
         self.session_owner: Dict[str, str] = {}      # session_id -> agent name (including non-team agents)
         self.waiters: Dict[str, Set["asyncio.Future[None]"]] = {}
         self.last_watch: Dict[str, float] = {}
+        self.watch_conns: Dict[str, Set[Conn]] = {}  # agent -> open connections that watch it (live push)
         # wake scheduling (phase 2b)
         self.runner_waiters: Set["asyncio.Future[None]"] = set()
         self.leases: Dict[str, Dict[str, Any]] = {}   # agent -> {expires, wake_id, unread, host}
@@ -224,6 +225,7 @@ class Hub:
 
     def _set_offline(self, conn: Conn) -> None:
         if conn.watching:
+            self.watch_conns.get(conn.watching, set()).discard(conn)
             self.last_watch.pop(conn.watching, None)
             self._poke_runners()
         if conn.name and conn.name in self.online:
@@ -685,7 +687,8 @@ class Hub:
             log("wake %d: %s (%s, %d unread) via %s" % (wid, m["agent"], m["cli"], m["unread"], runner))
             job = {k: m[k] for k in ("agent", "team", "cli", "session_id", "cwd", "model", "effort",
                                      "options", "unread", "heavy")}
-            job.update(wake_id=wid, prompt=self._wake_prompt(m), lease_seconds=WAKE_LEASE)
+            job.update(wake_id=wid, prompt=self._wake_prompt(m), lease_seconds=WAKE_LEASE,
+                       watched=bool(self.watch_conns.get(m["agent"])))  # a live `youchat pty` is listening
             jobs.append(job)
         return {"jobs": jobs, "human": self._human_notices(runner)}
 
@@ -746,7 +749,10 @@ class Hub:
             "X86-RUN-CDX-1": "DFI-RUN-CDX-1",
         }
         agent = alias_map.get(agent, agent)
+        if conn.watching and conn.watching != agent:
+            self.watch_conns.get(conn.watching, set()).discard(conn)
         conn.watching = agent
+        self.watch_conns.setdefault(agent, set()).add(conn)
         self.last_watch[agent] = time.time()
 
         def fetch() -> List[Dict[str, Any]]:

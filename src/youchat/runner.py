@@ -11,6 +11,7 @@ that is currently open somewhere on this host is never driven in parallel (repor
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import shutil
@@ -26,6 +27,8 @@ from youchat.sessions import running_session_ids
 BYPASS = ("bypass", "bypasspermissions", "dangerously-skip-permissions", "yolo")
 EXTRA_PATH = [os.path.expanduser("~/.local/bin"), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]
 ID_KEYS = ("session_id", "sessionId", "thread_id", "threadId", "conversation_id", "conversationId")
+TMUX_QUIET = 45.0          # s a tmux pane's screen must stay unchanged before we type into it
+TMUX_READ_TIMEOUT = 180.0  # s to wait for the agent to read its messages after the wake line was typed
 
 
 def log(*a: Any) -> None:
@@ -268,6 +271,7 @@ class Runner:
         self.pre = pre
         self.active: Dict[str, threading.Thread] = {}
         self.last_unwrapped_notice: Dict[str, float] = {}
+        self.pane_seen: Dict[str, Tuple[str, float]] = {}  # tmux pane -> (hash of its screen, unchanged since)
         self.logdir = ensure_private_dir(os.path.join(home_dir(), "wakes"))
 
     def run(self) -> None:
@@ -331,7 +335,11 @@ class Runner:
             return False
         from youchat.pty_wrap import is_session_idle
         from youchat.sessions import claude_live_records, live_push_session_ids
-        if sid in live_push_session_ids():
+        if cli != "claude" and "watched" in job:
+            live = job["watched"]  # the hub knows whether a `youchat pty` wrapper is listening right now
+        else:
+            live = sid in live_push_session_ids()  # Claude: channels flag on its command line; older hubs
+        if live:
             log("wake %s: %s session %s is open with live push; not driving in parallel" % (job["wake_id"], agent, sid))
             return True
         if cli == "claude":
@@ -444,8 +452,107 @@ class Runner:
         self._done(job, 0, None, "live-socket")
         return True
 
+    @staticmethod
+    def _tmux_pane_for(job: Dict[str, Any], sid: str) -> Optional[Tuple[str, str, bool]]:
+        """(pane id, tmux session, pane in copy mode) of the tmux pane where the member's session is open in a
+        codex/agy TUI that is NOT under `youchat pty` (e.g. restarted by hand after a self-update). The pane must
+        show the session id on the TUI's command line, or carry the member's name as its title (codex titles
+        panes "<session name> | <dir>"; `youchat open` titles new windows after the member)."""
+        from youchat.sessions import _classify_agent_proc, _ps
+        exe = which("tmux")
+        if not os.path.isabs(exe):
+            return None
+        try:
+            out = subprocess.run([exe, "list-panes", "-a", "-F",
+                                  "#{pane_id}|#{pane_pid}|#{pane_in_mode}|#{session_name}|#{pane_title}"],
+                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if out.returncode:
+            return None  # no tmux server
+        children: Dict[int, List[int]] = {}
+        args_of: Dict[int, str] = {}
+        for p, pp, a in _ps():
+            if p.isdigit() and pp.isdigit():
+                children.setdefault(int(pp), []).append(int(p))
+                args_of[int(p)] = a
+        want = "agy" if job["cli"] == "antigravity" else "codex"
+        for line in out.stdout.decode("utf-8", "replace").splitlines():
+            parts = line.split("|", 4)
+            if len(parts) < 5 or not parts[1].isdigit():
+                continue
+            pane, pid, in_mode, sess, title = parts
+            tuis, stack = [], [int(pid)]
+            while stack:
+                p = stack.pop()
+                a = args_of.get(p, "")
+                if "youchat" in a and " pty " in a:
+                    continue  # wrapped: that window has its own live push
+                if _classify_agent_proc(a) == want:
+                    tuis.append(a)
+                    continue
+                stack.extend(children.get(p, []))
+            if len(tuis) == 1 and ((sid and sid in tuis[0]) or title.split(" | ")[0].strip() == job["agent"]):
+                return pane, sess, in_mode == "1"
+        return None
+
+    def _drive_tmux_pane(self, job: Dict[str, Any], sid: str) -> bool:
+        """Live push for an unwrapped codex/agy TUI open in a tmux pane: type the wake line into the pane, the way
+        `youchat pty` would. True = handled (wake reported); False = no such pane, use the usual handling."""
+        from youchat.pty_wrap import _session_mtime, is_session_idle, wake_line
+        cli, agent = job["cli"], job["agent"]
+        if cli not in ("codex", "antigravity") or job.get("watched"):
+            return False
+        found = self._tmux_pane_for(job, sid)
+        if not found:
+            return False
+        pane, sess, in_mode = found
+        exe = which("tmux")
+        # Typing shows on screen (also under iTerm2 `tmux -CC`, where tmux sees keys as send-keys commands and
+        # client_activity never moves). Only type once the screen has not changed for TMUX_QUIET seconds, so a
+        # half-written prompt is never submitted. (agy re-sends invisible mode escapes while idle: compare the
+        # visible screen, not output activity.)
+        screen = subprocess.run([exe, "capture-pane", "-p", "-t", pane], stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL).stdout
+        digest, now = hashlib.sha1(screen).hexdigest(), time.time()
+        if self.pane_seen.get(pane, ("",))[0] != digest:
+            self.pane_seen[pane] = (digest, now)
+        changed = now - self.pane_seen[pane][1] < TMUX_QUIET
+        if in_mode or changed or not is_session_idle(cli, sid):
+            log("wake %s: %s is open in tmux pane %s but busy (%s); retrying later" % (
+                job["wake_id"], agent, pane, "scrolling" if in_mode else "screen changed recently" if changed
+                else "working"))
+            self._done(job, None, None, "busy")
+            return True
+        boost = cli == "antigravity" and bool((job.get("options") or {}).get("boost", True)) and bool(job.get("heavy"))
+        before = _session_mtime(cli, sid)
+        subprocess.run([exe, "send-keys", "-t", pane, "-l", "--", wake_line(agent, job.get("unread") or 1, boost=boost)])
+        time.sleep(0.15)
+        subprocess.run([exe, "send-keys", "-t", pane, "Enter"])
+        if boost:  # the /boost popup can swallow the first Enter
+            time.sleep(1.2)
+            if _session_mtime(cli, sid) <= before and is_session_idle(cli, sid):
+                subprocess.run([exe, "send-keys", "-t", pane, "Enter"])
+        log("wake %s: %s (%s) wake line typed into tmux pane %s (%s)" % (job["wake_id"], agent, cli, pane, sess))
+        # Report once it has read its mail (the hub counts a wake that consumed nothing), not after the whole turn.
+        deadline, hub = time.time() + TMUX_READ_TIMEOUT, HubClient()
+        try:
+            while time.time() < deadline:
+                time.sleep(2.0)
+                left = next((a["unread"] for a in hub.call("agents") if a["name"] == agent), 0)
+                if left < (job.get("unread") or 1):
+                    break
+        except HubError:
+            pass
+        finally:
+            hub.close()
+        self._done(job, 0, None, "tmux")
+        return True
+
     def _run_job(self, job: Dict[str, Any]) -> None:
         agent, sid = job["agent"], job.get("session_id") or ""
+        if sid and self._drive_tmux_pane(job, sid):
+            return
         if self._should_yield_open(job, sid):
             self._done(job, None, None, "busy")
             return

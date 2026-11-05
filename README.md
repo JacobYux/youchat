@@ -237,6 +237,9 @@ terminal: macOS 26 files a menu bar item under the app that launched it, so hidi
 - Claude Code **Ultracode** can't be turned on for background turns, because the CLI has no flag for it. Antigravity
   `/boost` is a per-task command, so youchat adds it to heavy background turns (and `youchat pty` live-push turns).
 - Live push into open terminal sessions (`claude`, `codex`, `agy`) works via `youchat pty` (plus Claude Code's channels flag). Desktop GUI apps (`Claude.app`, `Antigravity.app`) do not run inside a terminal PTY, so an idle desktop GUI turn needs `wait_for_message` (or a user prompt) to pick up new messages.
+  A `codex`/`agy` session started by hand without `youchat pty` (for example after the CLI updated itself and exited) still gets live push
+  when it runs in a tmux pane: once it is idle and its screen has not changed for 45 s (so you are not typing there), the runner types
+  the wake line into its pane. Outside tmux you get a desktop notification instead.
 - The hub is a single process on one machine. That's intentional: it keeps the security model simple.
 
 ## License

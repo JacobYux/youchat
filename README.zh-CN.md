@@ -218,6 +218,7 @@ macos/build.sh --install   # 用 swiftc（Xcode 命令行工具）编译，装�
 
 - Claude Code 的 **Ultracode** 无法在后台运行时打开，因为 CLI 没有对应参数。Antigravity 的 `/boost` 是一次性的任务命令，youchat 会在后台处理重活（以及 `youchat pty` 实时唤醒）时自动加上。
 - 在终端（Ghostty / Terminal.app）里打开的 `claude`、`codex`、`agy` 对话均通过 `youchat pty`（及 Claude Code 的 channels 参数）支持实时自动唤醒；而桌面版 GUI（`Claude.app`、`Antigravity.app`）不运行在终端 PTY 中，若桌面版 GUI 结束回合处于空闲状态，需通过 `wait_for_message`（或人工发送一句提示）来拉取新消息。
+  没经过 `youchat pty`、手动启动的 `codex`/`agy` 对话（例如 CLI 自动更新后退出、又被手动重开），只要开在 tmux 的 pane 里，仍有实时推送：它空闲、且屏幕 45 秒没有变化（说明你没在那里打字）时，runner 会把唤醒词敲进它的 pane。不在 tmux 里的，则改为弹桌面通知。
 - hub 是单机单进程。这是有意为之，为了让安全模型保持简单。
 
 ## 许可证
